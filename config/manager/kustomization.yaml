@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- manager.yaml
+# This namePrefix and namespace will be applied to resources when you run `kustomize build`
+# Often set during deployment (e.g., via CI/CD or `kubectl apply -k`)
+# namePrefix: db-query-operator-
+# namespace: db-query-operator-system
+images:
+- name: controller # Default name used in manager.yaml if not specified
+  newName: your-dockerhub-username/db-query-operator # Your image
+  newTag: latest # Your image tag

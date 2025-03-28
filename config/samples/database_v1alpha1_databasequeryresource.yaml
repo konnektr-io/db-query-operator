@@ -1,0 +1,36 @@
+apiVersion: database.example.com/v1alpha1
+kind: DatabaseQueryResource
+metadata:
+  name: user-configmaps-example
+  namespace: default # Deploy the CR in this namespace
+spec:
+  pollInterval: "1m" # Query every 1 minute
+  prune: true # Delete ConfigMaps if user is removed from DB
+  database:
+    type: postgres
+    connectionSecretRef:
+      name: db-credentials # Name of the Secret containing DB credentials
+      # namespace: database-secrets # Optional: If secret is in another namespace
+      # hostKey: DB_HOST # Optional: Customize key names in the Secret
+      # portKey: DB_PORT
+      # userKey: DB_USER
+      # passwordKey: DB_PASSWORD
+      # dbNameKey: DB_NAME
+      # sslModeKey: DB_SSLMODE
+  query: "SELECT username, user_id, email, status FROM users WHERE status = 'active';"
+  template: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      # NOTE: Name needs to be unique per row. Using username here.
+      # Ensure the value used for the name is DNS-compatible.
+      name: user-{{ .Row.username | lower }}-config
+      namespace: {{ .Metadata.Namespace }} # Use namespace from parent CR Metadata
+      labels:
+        user_id: "{{ .Row.user_id }}" # Use DB data in labels
+        managed-by-dbqr: "true" # Another potential label for selection
+    data:
+      email: "{{ .Row.email }}"
+      status: "{{ .Row.status }}"
+      username: "{{ .Row.username }}"
+      managedTimestamp: "{{ now | date "2006-01-02T15:04:05Z07:00" }}" # Example using Go template functions
