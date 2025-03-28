@@ -251,22 +251,22 @@ kubectl get configmap user-alice-config -n default -o yaml # Example for user 'a
 * `template` (string, required): A Go template string that renders a valid Kubernetes resource manifest (YAML or JSON).
   * **Template Context:** The template receives a map with the following structure:
 
-        ```
-        {
-          "Row": {
-            "column1_name": value1,
-            "column2_name": value2,
-            // ... other columns from the query result
-          },
-          "Metadata": { // Metadata of the parent DatabaseQueryResource CR
-             "Name": "cr-name",
-             "Namespace": "cr-namespace"
-             // ... other metav1.ObjectMeta fields
-          }
-        }
-        ```
+```
+{
+    "Row": {
+    "column1_name": value1,
+    "column2_name": value2,
+    // ... other columns from the query result
+    },
+    "Metadata": { // Metadata of the parent DatabaseQueryResource CR
+        "Name": "cr-name",
+        "Namespace": "cr-namespace"
+        // ... other metav1.ObjectMeta fields
+    }
+}
+```
 
-  * You can use standard Go template functions (sprig library is *not* included by default, but could be added). Access row data via `.Row.column_name`. Access parent CR metadata via `.Metadata.Namespace`, etc.
+* You can use standard Go template functions (sprig library is *not* included by default, but could be added). Access row data via `.Row.column_name`. Access parent CR metadata via `.Metadata.Namespace`, etc.
 
 ## Development
 
