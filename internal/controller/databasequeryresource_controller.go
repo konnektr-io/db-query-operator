@@ -1,4 +1,3 @@
-// db-query-operator/internal/controller/databasequeryresource_controller.go
 package controller
 
 import (
@@ -32,7 +31,7 @@ import (
 )
 
 const (
-	ManagedByLabel       = "database.example.com/managed-by" // Label to identify managed resources
+	ManagedByLabel       = "konnektr.io/managed-by" // Label to identify managed resources
 	ControllerName       = "databasequeryresource-controller"
 	ConditionReconciled  = "Reconciled"
 	ConditionDBConnected = "DBConnected"
@@ -45,9 +44,9 @@ type DatabaseQueryResourceReconciler struct {
 	Log    logr.Logger // Add logger field
 }
 
-//+kubebuilder:rbac:groups=database.example.com,resources=databasequeryresources,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=database.example.com,resources=databasequeryresources/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=database.example.com,resources=databasequeryresources/finalizers,verbs=update
+//+kubebuilder:rbac:groups=konnektr.io,resources=databasequeryresources,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=konnektr.io,resources=databasequeryresources/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=konnektr.io,resources=databasequeryresources/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups="*",resources="*",verbs=get;list;watch;create;update;patch;delete // WARNING: Broad permissions. Scope down if possible.
 
@@ -194,7 +193,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		}
 		labels[ManagedByLabel] = dbqr.Name // Link to the parent CR
 		// Consider adding a hash of the row data or a primary key as another label/annotation
-		// for more precise tracking if needed. E.g., labels["database.example.com/row-id"] = generateRowID(rowData)
+		// for more precise tracking if needed. E.g., labels["konnektr.io/row-id"] = generateRowID(rowData)
 		obj.SetLabels(labels)
 
 		// Set Owner Reference for garbage collection by Kubernetes (optional but recommended)
@@ -242,7 +241,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		log.Info("Pruning enabled, checking for stale resources")
 		pruneErrors = r.pruneStaleResources(ctx, dbqr, managedResourceKeys)
 		if len(pruneErrors) > 0 {
-			log.Error(fmt.Errorf(strings.Join(pruneErrors, "; ")), "Errors occurred during pruning")
+			log.Info("Errors occurred during pruning", "error", strings.Join(pruneErrors, "; "))
 		} else {
 			log.Info("Pruning completed")
 		}

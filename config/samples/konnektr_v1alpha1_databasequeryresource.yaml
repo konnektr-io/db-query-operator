@@ -1,4 +1,4 @@
-apiVersion: database.example.com/v1alpha1
+apiVersion: konnektr.io/v1alpha1
 kind: DatabaseQueryResource
 metadata:
   name: user-configmaps-example

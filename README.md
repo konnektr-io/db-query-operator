@@ -128,7 +128,7 @@ Deploy the CRD, RBAC rules (ClusterRole, ServiceAccount, ClusterRoleBinding), an
 kubectl create namespace ktrl-db-query-system
 
 # Apply the CRD
-kubectl apply -f config/crd/bases/database.example.com_databasequeryresources.yaml
+kubectl apply -f config/crd/bases/konnektr.io_databasequeryresources.yaml
 
 # Apply RBAC components (adjust namespace if you chose a different one)
 kubectl apply -f config/rbac/service_account.yaml -n ktrl-db-query-system
@@ -164,7 +164,7 @@ Create a `DatabaseQueryResource` custom resource to tell the operator which data
 **Example `config/samples/database_v1alpha1_databasequeryresource.yaml`:**
 
 ```yaml
-apiVersion: database.example.com/v1alpha1
+apiVersion: konnektr.io/v1alpha1
 kind: DatabaseQueryResource
 metadata:
   name: user-configmaps-example
@@ -205,7 +205,7 @@ spec:
         # Use DB data in labels/annotations
         user_id: "{{ .Row.user_id }}"
         # This label is automatically added by the controller:
-        # database.example.com/managed-by: user-configmaps-example
+        # konnektr.io/managed-by: user-configmaps-example
     data:
       email: "{{ .Row.email }}"
       status: "{{ .Row.status }}"
@@ -228,7 +228,7 @@ After the `pollInterval` duration, the operator should query the database and cr
 kubectl get databasequeryresource user-configmaps-example -n default -o yaml
 
 # Check for created resources (ConfigMaps in this example)
-kubectl get configmaps -n default -l database.example.com/managed-by=user-configmaps-example
+kubectl get configmaps -n default -l konnektr.io/managed-by=user-configmaps-example
 kubectl get configmap user-alice-config -n default -o yaml # Example for user 'alice'
 ```
 

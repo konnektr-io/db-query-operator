@@ -1,12 +1,9 @@
-// db-query-operator/api/v1alpha1/databasequeryresource_types.go
+// +kubebuilder:object:generate=true
 package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-// EDIT THIS FILE! THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required. Any new fields you add must have json tags for the fields to be serialized.
 
 // DatabaseConnectionSecretRef defines how to connect to the database via a Secret.
 type DatabaseConnectionSecretRef struct {
@@ -48,6 +45,7 @@ type DatabaseSpec struct {
 }
 
 // DatabaseQueryResourceSpec defines the desired state of DatabaseQueryResource
+// +kubebuilder:deepcopy-gen=true
 type DatabaseQueryResourceSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
@@ -82,10 +80,8 @@ type DatabaseQueryResourceSpec struct {
 }
 
 // DatabaseQueryResourceStatus defines the observed state of DatabaseQueryResource
+// +kubebuilder:deepcopy-gen=true
 type DatabaseQueryResourceStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
 	// Conditions represent the latest available observations of the resource's state.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
