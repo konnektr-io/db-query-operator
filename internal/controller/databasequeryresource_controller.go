@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	databasev1alpha1 "github.com/konnektr-io/db-query-operator/api/v1alpha1" // Adjust import path
+	databasev1alpha1 "github.com/konnektr-io/db-query-operator/api/v1alpha1"
 )
 
 const (
@@ -474,7 +474,7 @@ func (r *DatabaseQueryResourceReconciler) createOrUpdateResource(ctx context.Con
 	// Preserve ClusterIP if it's a Service and already set
 	if existing.GetKind() == "Service" {
 		if clusterIP, found, _ := unstructured.NestedString(existing.Object, "spec", "clusterIP"); found && clusterIP != "" && clusterIP != "None" {
-			if _, objHasIP, _ := unstructured.NestedString(obj.Object, "spec", "clusterIP"); !objHasIP || unstructured.NestedSet(obj.Object, clusterIP, "spec", "clusterIP") != nil {
+			if _, objHasIP, _ := unstructured.NestedString(obj.Object, "spec", "clusterIP"); !objHasIP || unstructured.SetNestedField(obj.Object, clusterIP, "spec", "clusterIP") != nil {
 				log.Info("Preserving existing ClusterIP", "ClusterIP", clusterIP)
 				unstructured.SetNestedField(obj.Object, clusterIP, "spec", "clusterIP")
 			}
