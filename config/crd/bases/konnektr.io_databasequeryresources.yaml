@@ -119,6 +119,11 @@ spec:
                 description: SQL query to execute against the database.
                 minLength: 1
                 type: string
+              statusUpdateQueryTemplate:
+                description: |-
+                  Cypher query template for updating the status of database nodes.
+                  The template will receive a map[string]interface{} named `Row` representing the database row.
+                type: string
               template:
                 description: |-
                   Go template string for the Kubernetes resource to be created for each row.

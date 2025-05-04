@@ -147,6 +147,8 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, nil // Invalid template, don't requeue based on interval
 	}
 
+	var processedRows []map[string]interface{} // Store successfully processed row data for status updates
+
 	for rows.Next() {
 		// Scan row into a map[string]interface{}
 		values, err := rows.Values()
@@ -226,6 +228,9 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		resourceKey := getObjectKey(obj)
 		managedResourceKeys[resourceKey] = true
 		log.Info("Successfully applied resource", "key", resourceKey)
+
+		// Store rowData for status update query
+		processedRows = append(processedRows, rowData)
 	}
 
 	// Check for errors during row iteration
@@ -271,6 +276,36 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	now := metav1.Now()
 	dbqr.Status.LastPollTime = &now
 	setCondition(dbqr, ConditionReconciled, metav1.ConditionTrue, "Success", "Successfully queried DB and reconciled resources")
+
+	// After processing rows and applying resources, handle status updates
+	if dbqr.Spec.StatusUpdateQueryTemplate != "" {
+		tmpl, err := template.New("statusUpdateQuery").Parse(dbqr.Spec.StatusUpdateQueryTemplate)
+		if err != nil {
+			log.Error(err, "Failed to parse status update query template")
+		} else {
+			for _, rowData := range processedRows { // Assume processedRows contains data for successfully applied resources
+				var queryBuffer bytes.Buffer
+				err = tmpl.Execute(&queryBuffer, map[string]interface{}{
+					"Row": rowData,
+					"Status": map[string]interface{}{
+						"State":   "Success", // or "Error" based on the outcome
+						"Message": "",        // or the error message
+					},
+				})
+				if err != nil {
+					log.Error(err, "Failed to render status update query")
+					continue
+				}
+
+				_, err = conn.Exec(ctx, queryBuffer.String())
+				if err != nil {
+					log.Error(err, "Failed to execute status update query", "query", queryBuffer.String())
+				} else {
+					log.Info("Successfully updated status in database", "query", queryBuffer.String())
+				}
+			}
+		}
+	}
 
 	return ctrl.Result{RequeueAfter: pollInterval}, nil
 }
@@ -500,13 +535,10 @@ func (r *DatabaseQueryResourceReconciler) createOrUpdateResource(ctx context.Con
 }
 
 // SetupWithManager sets up the controller with the Manager.
+// The controller will watch both the DatabaseQueryResource primary resource and the unstructured secondary resource.
 func (r *DatabaseQueryResourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&databasev1alpha1.DatabaseQueryResource{}).
-		// We could Own resources if we knew the types beforehand, but since they
-		// are dynamic from the template, we rely on labels and owner references.
-		// If we owned specific types, the controller would automatically get triggered
-		// when owned resources change.
-		// Owns(&corev1.ConfigMap{}). // Example if we only created ConfigMaps
+		Owns(&unstructured.Unstructured{}).
 		Complete(r)
 }

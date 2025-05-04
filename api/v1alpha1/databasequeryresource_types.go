@@ -77,6 +77,11 @@ type DatabaseQueryResourceSpec struct {
 	// +optional
 	// +kubebuilder:default=true
 	Prune *bool `json:"prune,omitempty"`
+
+	// Cypher query template for updating the status of database nodes.
+	// The template will receive a map[string]interface{} named `Row` representing the database row.
+	// +kubebuilder:validation:Optional
+	StatusUpdateQueryTemplate string `json:"statusUpdateQueryTemplate,omitempty"`
 }
 
 // DatabaseQueryResourceStatus defines the observed state of DatabaseQueryResource

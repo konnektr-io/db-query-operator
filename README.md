@@ -232,6 +232,76 @@ kubectl get configmaps -n default -l konnektr.io/managed-by=user-configmaps-exam
 kubectl get configmap user-alice-config -n default -o yaml # Example for user 'alice'
 ```
 
+### Example with `query` and `statusUpdateQueryTemplate`
+
+Here is an example `DatabaseQueryResource` Custom Resource that uses both `query` and `statusUpdateQueryTemplate` fields. This example creates a Kubernetes `Deployment` for each row in the database and updates the database with the deployment's status:
+
+```yaml
+apiVersion: konnektr.io/v1alpha1
+kind: DatabaseQueryResource
+metadata:
+  name: deployment-example
+  namespace: default
+spec:
+  pollInterval: "1m"
+  prune: true
+  database:
+    type: postgres
+    connectionSecretRef:
+      name: db-credentials
+  query: |
+    SELECT resource_id, name, replicas, image, status FROM deployments WHERE status IN ('Pending', 'Updating');
+  template: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: {{ .Row.name }}
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        resource_id: "{{ .Row.resource_id }}"
+    spec:
+      replicas: {{ .Row.replicas }}
+      selector:
+        matchLabels:
+          app: {{ .Row.name }}
+      template:
+        metadata:
+          labels:
+            app: {{ .Row.name }}
+        spec:
+          containers:
+          - name: {{ .Row.name }}
+            image: {{ .Row.image }}
+  statusUpdateQueryTemplate: |
+    UPDATE deployments
+    SET status = '{{ .Status.State }}',
+        error_message = '{{ .Status.Message }}'
+    WHERE resource_id = '{{ .Row.resource_id }}';
+```
+
+In this example:
+
+* The `query` fetches rows from the `deployments` table where the `status` is either `Pending` or `Updating`.
+* The `template` generates a Kubernetes `Deployment` for each row.
+* The `statusUpdateQueryTemplate` updates the `status` and `error_message` fields in the database based on the reconciliation outcome.
+
+### Handling Timing for Status Updates
+
+To ensure the database reflects the actual state of the Kubernetes resources:
+
+1. **Polling for Resource Status:**
+   * After applying resources, the operator can periodically check the status of the managed resources (e.g., `Deployment` status conditions).
+   * Use the Kubernetes API to fetch the resource's status and update the database accordingly.
+
+2. **Event-Driven Updates:**
+   * Implement a watch mechanism to listen for changes to the managed resources.
+   * When a resource's status changes, trigger the status update query to reflect the new state in the database.
+
+3. **Combining Polling and Events:**
+   * Use a combination of periodic polling and event-driven updates to ensure timely and accurate status synchronization.
+
+Would you like me to implement a watch mechanism for event-driven updates or periodic polling for resource status?
+
 ## CRD Specification (`DatabaseQueryResourceSpec`)
 
 * `pollInterval` (string, required): Duration string specifying how often to poll the database (e.g., `"30s"`, `"5m"`, `"1h"`).
