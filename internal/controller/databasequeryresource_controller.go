@@ -10,6 +10,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/Masterminds/sprig/v3"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -156,7 +157,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	var rowProcessingErrors []string
 
 	// Parse the template once
-	tmpl, err := template.New("resourceTemplate").Parse(dbqr.Spec.Template)
+	tmpl, err := template.New("resourceTemplate").Funcs(sprig.TxtFuncMap()).Parse(dbqr.Spec.Template)
 	if err != nil {
 		log.Error(err, "Failed to parse resource template")
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "TemplateError", fmt.Sprintf("Invalid template: %v", err))
@@ -254,7 +255,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 
 	// After processing rows and applying resources, handle status updates
 	if dbqr.Spec.StatusUpdateQueryTemplate != "" {
-		tmpl, err := template.New("statusUpdateQuery").Parse(dbqr.Spec.StatusUpdateQueryTemplate)
+		tmpl, err := template.New("statusUpdateQuery").Funcs(sprig.TxtFuncMap()).Parse(dbqr.Spec.StatusUpdateQueryTemplate)
 		if err != nil {
 			log.Error(err, "Failed to parse status update query template")
 		} else {
