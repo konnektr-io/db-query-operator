@@ -343,6 +343,10 @@ spec:
 				g.Expect(k8sClient.Get(ctx, deployLookup, createdDeploy)).To(Succeed())
 			}, timeout, interval).Should(Succeed())
 
+			// Patch the Deployment status to simulate readiness
+			createdDeploy.Status.AvailableReplicas = 1
+			Expect(k8sClient.Status().Update(ctx, createdDeploy)).To(Succeed())
+
 			// Wait for the Deployment to become available (ready)
 			Eventually(func(g Gomega) {
 				g.Expect(createdDeploy.Status.AvailableReplicas).To(BeNumerically(">=", 1))
