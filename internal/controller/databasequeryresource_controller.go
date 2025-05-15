@@ -71,8 +71,8 @@ type childResourceInfo struct {
 //+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups="*",resources="*",verbs=get;list;watch;create;update;patch;delete // WARNING: Broad permissions. Scope down if possible.
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
+// main kubernetes reconciliation loop
+// handles both polling interval and child resource updates
 func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 	r.Log = log
