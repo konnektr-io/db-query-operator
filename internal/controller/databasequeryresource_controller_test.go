@@ -37,6 +37,23 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 				return mock, nil
 			}
 
+			// Create a dummy Secret required by the controller
+			dummySecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "irrelevant",
+					Namespace: ResourceNamespace,
+				},
+				Data: map[string][]byte{
+					"host":     []byte("localhost"),
+					"port":     []byte("5432"),
+					"username": []byte("testuser"),
+					"password": []byte("testpass"),
+					"dbname":   []byte("testdb"),
+					"sslmode":  []byte("disable"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, dummySecret)).To(Succeed())
+
 			// Create the DatabaseQueryResource
 			dbqr := &databasev1alpha1.DatabaseQueryResource{
 				ObjectMeta: metav1.ObjectMeta{
@@ -63,23 +80,6 @@ data:
 				},
 			}
 			Expect(k8sClient.Create(ctx, dbqr)).To(Succeed())
-
-			// Create a dummy Secret required by the controller
-			dummySecret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "irrelevant",
-					Namespace: ResourceNamespace,
-				},
-				Data: map[string][]byte{
-					"host":     []byte("localhost"),
-					"port":     []byte("5432"),
-					"username": []byte("testuser"),
-					"password": []byte("testpass"),
-					"dbname":   []byte("testdb"),
-					"sslmode":  []byte("disable"),
-				},
-			}
-			Expect(k8sClient.Create(ctx, dummySecret)).To(Succeed())
 
 			// Check the DatabaseQueryResource is created and reconciled
 			lookupKey := types.NamespacedName{Name: "mock-dbqr", Namespace: ResourceNamespace}
