@@ -147,7 +147,7 @@ func main() {
 		WebhookServer:          webhookServer, // Pass the server instance
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "a7a7e7a4.example.com",
+		LeaderElectionID:       "dbqueryoperator.konnektr.io",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

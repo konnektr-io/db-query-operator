@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/jackc/pgx/v5"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -28,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	databasev1alpha1 "github.com/konnektr-io/db-query-operator/api/v1alpha1"
+	"github.com/konnektr-io/db-query-operator/internal/util"
 )
 
 const (
@@ -101,37 +101,35 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
 
-	// 4. Connect to Database
-	connString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
-		dbConfig["username"], dbConfig["password"], dbConfig["host"], dbConfig["port"], dbConfig["dbname"], dbConfig["sslmode"])
-
-	// Use background context for DB connection potentially? Or keep within reconcile timeout? Let's keep it for now.
-	conn, err := pgx.Connect(ctx, connString)
-	if err != nil {
+	// 4. Select and connect to the appropriate database client
+	var dbClient util.DatabaseClient
+	switch strings.ToLower(dbqr.Spec.Database.Type) {
+	case "postgres", "postgresql", "pgx", "":
+		dbClient = &util.PostgresDatabaseClient{}
+	// case "mysql":
+	// 	dbClient = &util.MySQLDatabaseClient{}
+	default:
+		log.Error(fmt.Errorf("unsupported database type: %s", dbqr.Spec.Database.Type), "Unsupported database type")
+		setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "UnsupportedDB", "Unsupported database type")
+		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Unsupported database type")
+		return ctrl.Result{}, nil
+	}
+	if err := dbClient.Connect(ctx, dbConfig); err != nil {
 		log.Error(err, "Failed to connect to database", "host", dbConfig["host"], "db", dbConfig["dbname"])
 		setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "ConnectionError", err.Error())
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Failed to connect to DB")
-		// Don't clear last poll time here
-		// Requeue after poll interval, as DB might become available
 		return ctrl.Result{RequeueAfter: pollInterval}, nil
 	}
-	defer conn.Close(ctx)
+	defer dbClient.Close(ctx)
 	log.Info("Successfully connected to database", "host", dbConfig["host"], "db", dbConfig["dbname"])
 	setCondition(dbqr, ConditionDBConnected, metav1.ConditionTrue, "Connected", "Successfully connected to the database")
 
 	// 5. Execute Query
-	rows, err := conn.Query(ctx, dbqr.Spec.Query)
+	results, columnNames, err := dbClient.Query(ctx, dbqr.Spec.Query)
 	if err != nil {
 		log.Error(err, "Failed to execute database query", "query", dbqr.Spec.Query)
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "QueryFailed", fmt.Sprintf("Failed to execute query: %v", err))
-		// Don't clear last poll time here
 		return ctrl.Result{RequeueAfter: pollInterval}, nil // Requeue after interval
-	}
-	defer rows.Close()
-
-	columnNames := make([]string, len(rows.FieldDescriptions()))
-	for i, fd := range rows.FieldDescriptions() {
-		columnNames[i] = string(fd.Name)
 	}
 	log.Info("Query executed successfully", "columns", columnNames)
 
@@ -149,20 +147,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 
 	var processedRows []map[string]interface{} // Store successfully processed row data for status updates
 
-	for rows.Next() {
-		// Scan row into a map[string]interface{}
-		values, err := rows.Values()
-		if err != nil {
-			log.Error(err, "Failed to scan database row values")
-			rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("scan error: %v", err))
-			continue // Skip this row
-		}
-
-		rowData := make(map[string]interface{})
-		for i, colName := range columnNames {
-			rowData[colName] = values[i]
-		}
-
+	for _, rowData := range results {
 		// Render the template
 		var renderedManifest bytes.Buffer
 		err = tmpl.Execute(&renderedManifest, map[string]interface{}{"Row": rowData})
@@ -187,57 +172,29 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		if obj.GetNamespace() == "" {
 			obj.SetNamespace(dbqr.Namespace)
 		}
-
-		// IMPORTANT: Add label for tracking managed resources
 		labels := obj.GetLabels()
 		if labels == nil {
 			labels = make(map[string]string)
 		}
-		labels[ManagedByLabel] = dbqr.Name // Link to the parent CR
-		// Consider adding a hash of the row data or a primary key as another label/annotation
-		// for more precise tracking if needed. E.g., labels["konnektr.io/row-id"] = generateRowID(rowData)
+		labels[ManagedByLabel] = dbqr.Name
 		obj.SetLabels(labels)
-
-		// Set Owner Reference for garbage collection by Kubernetes (optional but recommended)
-		// This ensures downstream resources are deleted when the DatabaseQueryResource is deleted.
 		if err := controllerutil.SetControllerReference(dbqr, obj, r.Scheme); err != nil {
 			log.Error(err, "Failed to set owner reference on object", "object GVK", obj.GroupVersionKind(), "object Name", obj.GetName())
 			rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("owner ref error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
 			continue // Skip this resource
 		}
-
-		// Create or Update the resource
 		log.Info("Applying resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
-		// Use Server-Side Apply for better conflict resolution and field management
-		patchMethod := client.Apply // Default to Apply
+		patchMethod := client.Apply
 		err = r.Patch(ctx, obj, patchMethod, client.FieldOwner(ControllerName), client.ForceOwnership)
-
-		// Fallback to CreateOrUpdate if Apply fails (e.g., CRD not supporting SSA or other issues)
-		// Note: CreateOrUpdate is less precise about field ownership.
-		/*
-			err = r.createOrUpdateResource(ctx, obj)
-		*/
-
 		if err != nil {
 			log.Error(err, "Failed to apply (create/update) resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 			rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("apply error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
 			continue // Skip this resource
 		}
-
-		// Record the key of the successfully managed resource
 		resourceKey := getObjectKey(obj)
 		managedResourceKeys[resourceKey] = true
 		log.Info("Successfully applied resource", "key", resourceKey)
-
-		// Store rowData for status update query
 		processedRows = append(processedRows, rowData)
-	}
-
-	// Check for errors during row iteration
-	if err := rows.Err(); err != nil {
-		log.Error(err, "Error iterating over query results")
-		rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("row iteration error: %v", err))
-		// Proceed to pruning but mark reconciliation as failed later
 	}
 
 	// 7. Prune Old Resources (Garbage Collection)
@@ -297,7 +254,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 					continue
 				}
 
-				_, err = conn.Exec(ctx, queryBuffer.String())
+				err = dbClient.Exec(ctx, queryBuffer.String())
 				if err != nil {
 					log.Error(err, "Failed to execute status update query", "query", queryBuffer.String())
 				} else {
