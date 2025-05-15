@@ -12,6 +12,8 @@ import (
 	"github.com/konnektr-io/db-query-operator/internal/util"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,7 +27,7 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 		timeout  = time.Second * 10
 		interval = time.Millisecond * 250
 	)
-/* 
+
 	Describe("When reconciling a DatabaseQueryResource", func() {
 		It("Should create a ConfigMap with correct labels and update status using mock DB", func() {
 			ctx := context.Background()
@@ -120,8 +122,7 @@ data:
 			}, timeout, interval).Should(Succeed())
 		})
 	})
- */
-/* 
+
 	Describe("with multiple rows and advanced templating", func() {
 		It("should create/update resources for each row and not prune when prune=false", func() {
 			ctx := context.Background()
@@ -257,8 +258,7 @@ data:
 				}, timeout, interval).Should(Succeed())
 			}
 		})
-	}) */
-	 
+	})
 
 	Describe("DatabaseQueryResource child resource state change", func() {
 		It("should update parent status and execute status update query when a Deployment changes state", func() {
