@@ -209,12 +209,15 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		processedRows = append(processedRows, rowData)
 	}
 
-	// 7. Prune Old Resources (Garbage Collection) and collect all child resources
+	// 7. Collect all child resources, then prune if enabled
 	var pruneErrors []string
-	var allChildResources []*unstructured.Unstructured
+	allChildResources, err := r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
+	if err != nil {
+		log.Error(err, "Failed to collect child resources")
+	}
 	if dbqr.Spec.GetPrune() {
 		log.Info("Pruning enabled, checking for stale resources")
-		pruneErrors, allChildResources = r.pruneStaleAndCollect(ctx, dbqr, managedResourceKeys, r.OwnedGVKs)
+		pruneErrors = r.pruneStaleResources(ctx, dbqr, managedResourceKeys, allChildResources)
 		if len(pruneErrors) > 0 {
 			log.Info("Errors occurred during pruning", "error", strings.Join(pruneErrors, "; "))
 		} else {
@@ -222,7 +225,6 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		}
 	} else {
 		log.Info("Pruning disabled")
-		_, allChildResources = r.pruneStaleAndCollect(ctx, dbqr, managedResourceKeys, r.OwnedGVKs)
 	}
 
 	// 8. Check for child resource state changes and update status if needed
@@ -319,50 +321,53 @@ func (r *DatabaseQueryResourceReconciler) getDBConfig(ctx context.Context, dbqr 
 	return config, nil
 }
 
-// pruneStaleAndCollect lists all resources managed by the CR, deletes those not found in the current desired state, and returns all child resources.
-func (r *DatabaseQueryResourceReconciler) pruneStaleAndCollect(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, currentKeys map[string]bool, ownedGVKs []schema.GroupVersionKind) ([]string, []*unstructured.Unstructured) {
+// pruneStaleResources deletes resources in allChildren that are not in currentKeys. Returns errors for any failed deletions.
+func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, currentKeys map[string]bool, allChildren []*unstructured.Unstructured) []string {
 	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
 	var errors []string
-	var allChildren []*unstructured.Unstructured
+	for _, item := range allChildren {
+		objKey := getObjectKey(item)
+		if _, exists := currentKeys[objKey]; !exists {
+			log.Info("Pruning stale resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
+			if err := r.Delete(ctx, item); err != nil {
+				if !apierrors.IsNotFound(err) {
+					log.Error(err, "Failed to prune resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
+					errors = append(errors, fmt.Sprintf("delete %s: %v", objKey, err))
+				}
+			} else {
+				log.Info("Successfully pruned resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
+			}
+		}
+	}
+	return errors
+}
 
+// collectAllChildResources lists all resources managed by the CR and returns them, but does not delete anything.
+func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, ownedGVKs []schema.GroupVersionKind) ([]*unstructured.Unstructured, error) {
+	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
+	var allChildren []*unstructured.Unstructured
 	selector := labels.SelectorFromSet(labels.Set{
 		ManagedByLabel: dbqr.Name,
 	})
-
 	for _, gvk := range ownedGVKs {
 		list := &unstructured.UnstructuredList{}
 		list.SetGroupVersionKind(gvk)
 		err := r.List(ctx, list, client.InNamespace(dbqr.Namespace), client.MatchingLabelsSelector{Selector: selector})
 		if err != nil {
 			if meta.IsNoMatchError(err) || runtime.IsNotRegisteredError(err) {
-				log.V(1).Info("Skipping GVK for pruning, not registered in scheme", "GVK", gvk)
+				log.V(1).Info("Skipping GVK for collection, not registered in scheme", "GVK", gvk)
 				continue
 			}
-			log.Error(err, "Failed to list resources for pruning", "GVK", gvk)
-			errors = append(errors, fmt.Sprintf("list %s: %v", gvk.Kind, err))
-			continue
+			log.Error(err, "Failed to list resources for collection", "GVK", gvk)
+			return nil, err
 		}
-		log.Info("Found candidates for pruning", "GVK", gvk, "Count", len(list.Items))
+		log.Info("Found candidates for collection", "GVK", gvk, "Count", len(list.Items))
 		for i := range list.Items {
 			item := &list.Items[i]
 			allChildren = append(allChildren, item)
-			objKey := getObjectKey(item)
-			if _, exists := currentKeys[objKey]; !exists {
-				// This resource was managed by us previously but is not in the current DB result set. Delete it.
-				log.Info("Pruning stale resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
-				if err := r.Delete(ctx, item); err != nil {
-					// Ignore not found errors, might have been deleted already
-					if !apierrors.IsNotFound(err) {
-						log.Error(err, "Failed to prune resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
-						errors = append(errors, fmt.Sprintf("delete %s: %v", objKey, err))
-					}
-				} else {
-					log.Info("Successfully pruned resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
-				}
-			}
 		}
 	}
-	return errors, allChildren
+	return allChildren, nil
 }
 
 // updateStatusForChildResources checks all child resources and updates the parent status if any child has changed state.

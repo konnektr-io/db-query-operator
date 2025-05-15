@@ -353,12 +353,11 @@ spec:
 				g.Expect(createdDeploy.Status.AvailableReplicas).To(BeNumerically(">=", 1))
 			}, timeout*2, interval).Should(Succeed())
 
-			// Wait for the parent dbqr status to be updated due to child event
+			// Wait for the parent dbqr status to be updated
 			lookupKey := types.NamespacedName{Name: "deploy-dbqr", Namespace: ResourceNamespace}
 			created := &databasev1alpha1.DatabaseQueryResource{}
 			Eventually(func(g Gomega) {
 				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
-				// Should have a condition for child resource change
 				found := false
 				for _, cond := range created.Status.Conditions {
 					if cond.Reason == "Success" {
