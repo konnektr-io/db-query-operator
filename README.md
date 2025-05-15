@@ -1,4 +1,4 @@
-# KtrlDBQuery Database Query Operator
+# KtrlPlane Database Query Operator
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 <!-- Add other badges if applicable: build status, code coverage, etc. -->
