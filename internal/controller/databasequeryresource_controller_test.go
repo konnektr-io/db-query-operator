@@ -209,6 +209,14 @@ data:
 				}, timeout, interval).Should(Succeed())
 			}
 
+			// Debug: Assert all three ConfigMaps exist before DB update
+			for _, id := range []int{1, 2, 3} {
+				cmName := "user-cm-" + strconv.Itoa(id)
+				cmLookup := types.NamespacedName{Name: cmName, Namespace: ResourceNamespace}
+				createdCM := &corev1.ConfigMap{}
+				Ω(k8sClient.Get(ctx, cmLookup, createdCM)).Should(Succeed(), "ConfigMap %s should exist before DB update", cmName)
+			}
+
 			// Now update the mock DB: change Bob's age, remove Charlie
 			mock.mu.Lock()
 			mock.Rows = []util.RowResult{
@@ -219,6 +227,14 @@ data:
 
 			// Wait for more than the poll interval
 			time.Sleep(12 * time.Second)
+
+			// Debug: Assert all three ConfigMaps still exist after DB update (prune=false)
+			for _, id := range []int{1, 2, 3} {
+				cmName := "user-cm-" + strconv.Itoa(id)
+				cmLookup := types.NamespacedName{Name: cmName, Namespace: ResourceNamespace}
+				createdCM := &corev1.ConfigMap{}
+				Ω(k8sClient.Get(ctx, cmLookup, createdCM)).Should(Succeed(), "ConfigMap %s should still exist after DB update", cmName)
+			}
 
 			// Alice and Bob should still exist, Charlie should still exist (prune=false), Bob's age should be updated
 			for _, row := range []util.RowResult{
