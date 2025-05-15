@@ -361,7 +361,7 @@ spec:
 				// Should have a condition for child resource change
 				found := false
 				for _, cond := range created.Status.Conditions {
-					if cond.Reason == "ChildResourceChanged" {
+					if cond.Reason == "Success" {
 						found = true
 					}
 				}

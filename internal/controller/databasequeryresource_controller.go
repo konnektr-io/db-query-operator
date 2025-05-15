@@ -160,17 +160,9 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	var processedRows []map[string]interface{} // Store successfully processed row data for status updates
 
 	for _, rowData := range results {
-		// Debug: log rowData before rendering template
-		log.Info("Row data", "rowData", rowData)
-		if _, ok := rowData["id"]; !ok {
-			log.Info("Row data missing 'id' field before template rendering", "rowData", rowData)
-		} else if rowData["id"] == nil {
-			log.Info("Row data has nil 'id' field before template rendering", "rowData", rowData)
-		}
 		// Render the template
 		var renderedManifest bytes.Buffer
 		err = tmpl.Execute(&renderedManifest, map[string]interface{}{"Row": rowData})
-		log.Info("Row data", "rowData", rowData, "renderedManifest", renderedManifest.String())
 		if err != nil {
 			log.Error(err, "Failed to render template for row", "row", rowData)
 			rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("template render error for row data %v: %v", rowData, err))
