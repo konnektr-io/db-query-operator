@@ -128,7 +128,7 @@ data:
 			Eventually(func(g Gomega) {
 				g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
 				labels := createdCM.GetLabels()
-				g.Expect(labels).To(HaveKeyWithValue(ManagedByLabel, "mock-dbqr"))
+				g.Expect(labels).To(HaveKeyWithValue(ManagedByLabel, "test-dbqr"))
 			}, timeout, interval).Should(Succeed())
 		})
 	})
