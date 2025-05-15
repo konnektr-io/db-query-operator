@@ -182,7 +182,7 @@ metadata:
     {{- else }}
     odd: "true"
     {{- end }}
-    user-name: {{ .Row.name }}
+    user-name: {{ .Row.name | lower }}
 data:
   greeting: "Hello, {{ .Row.name | title }}! You are {{ .Row.age }} years old."
   id: "{{ .Row.id }}"
