@@ -23,9 +23,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/yaml" // For decoding template output
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	databasev1alpha1 "github.com/konnektr-io/db-query-operator/api/v1alpha1"
 	"github.com/konnektr-io/db-query-operator/internal/util"
@@ -226,9 +228,17 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	var processedRows []map[string]interface{} // Store successfully processed row data for status updates
 
 	for _, rowData := range results {
+		// Debug: log rowData before rendering template
+		log.Info("Row data", "rowData", rowData)
+		if _, ok := rowData["id"]; !ok {
+			log.Info("Row data missing 'id' field before template rendering", "rowData", rowData)
+		} else if rowData["id"] == nil {
+			log.Info("Row data has nil 'id' field before template rendering", "rowData", rowData)
+		}
 		// Render the template
 		var renderedManifest bytes.Buffer
 		err = tmpl.Execute(&renderedManifest, map[string]interface{}{"Row": rowData})
+		log.Info("Row data", "rowData", rowData, "renderedManifest", renderedManifest.String())
 		if err != nil {
 			log.Error(err, "Failed to render template for row", "row", rowData)
 			rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("template render error for row data %v: %v", rowData, err))
@@ -403,7 +413,6 @@ func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Contex
 		list.SetGroupVersionKind(gvk) // Set GVK for List operation
 
 		err := r.List(ctx, list, client.InNamespace(dbqr.Namespace), client.MatchingLabelsSelector{Selector: selector})
-		// Use client.MatchingLabels{ManagedByLabel: dbqr.Name} if selector gives issues
 
 		if err != nil {
 			// Ignore "no kind is registered" errors, just means we don't know about this GVK yet
@@ -535,7 +544,7 @@ func (r *DatabaseQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manag
 	for _, gvk := range ownedGVKs {
 		u := &unstructured.Unstructured{}
 		u.SetGroupVersionKind(gvk)
-		controllerBuilder = controllerBuilder.Owns(u)
+		controllerBuilder = controllerBuilder.Owns(u, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}))
 	}
 
 	return controllerBuilder.Complete(r)
