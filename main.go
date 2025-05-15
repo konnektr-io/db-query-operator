@@ -24,6 +24,7 @@ import (
 
 	databasev1alpha1 "github.com/konnektr-io/db-query-operator/api/v1alpha1" // Adjust import path
 	"github.com/konnektr-io/db-query-operator/internal/controller"           // Adjust import path
+	"github.com/konnektr-io/db-query-operator/internal/util"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -69,7 +70,6 @@ func parseWatchedGVKs(pattern string) ([]schema.GroupVersionKind, error) {
 	if len(gvks) == 0 {
 		return nil, fmt.Errorf("no valid watched GVKs specified")
 	}
-	setupLog.Info("Watching GVKs", "gvks", gvks)
 	return gvks, nil
 }
 
@@ -130,11 +130,12 @@ func main() {
 
 	// Parse watched GVKs from flag or env
 	var err error
-	registeredGVKs, err = parseWatchedGVKs(gvkPattern)
+	registeredGVKs, err = util.ParseGVKs(gvkPattern)
 	if err != nil {
 		setupLog.Error(err, "invalid watched-gvk-patterns")
 		os.Exit(1)
 	}
+	setupLog.Info("Watching GVKs", "gvks", registeredGVKs)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,

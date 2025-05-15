@@ -5,7 +5,6 @@ package controller
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -14,6 +13,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/konnektr-io/db-query-operator/internal/util"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -67,10 +67,15 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
+	// Set the registeredGVKs for the test to allow ConfigMap
+	var gvkPattern = "v1/ConfigMap;apps/v1/Deployment"
+	registeredGVKs, err := util.ParseGVKs(gvkPattern)
+	Expect(err).ToNot(HaveOccurred())
+
 	err = (&DatabaseQueryResourceReconciler{
 		Client: k8sManager.GetClient(),
 		Scheme: k8sManager.GetScheme(),
-	}).SetupWithManager(k8sManager)
+	}).SetupWithManagerAndGVKs(k8sManager, registeredGVKs)
 	Expect(err).ToNot(HaveOccurred())
 
 	go func() {
@@ -78,8 +83,6 @@ var _ = BeforeSuite(func() {
 		err = k8sManager.Start(ctx)
 		Expect(err).ToNot(HaveOccurred(), "failed to run manager")
 	}()
-	// Set the gvkPattern for the test to allow ConfigMap
-	os.Setenv("GVK_PATTERN", "v1/ConfigMap")
 })
 
 var _ = AfterSuite(func() {
