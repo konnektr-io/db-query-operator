@@ -35,7 +35,8 @@ jobs:
       - name: Install envtest tools
         run: |
           go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-          echo "KUBEBUILDER_ASSETS=$(setup-envtest use 1.29.x --print-path)" >> $GITHUB_ENV
+          setup-envtest use 1.29.x --bin-dir=./envtest-bin
+          echo "KUBEBUILDER_ASSETS=$PWD/envtest-bin" >> $GITHUB_ENV
       - name: Run integration tests
         env:
           KUBEBUILDER_ASSETS: ${{ env.KUBEBUILDER_ASSETS }}
