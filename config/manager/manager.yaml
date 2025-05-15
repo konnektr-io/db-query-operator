@@ -25,7 +25,7 @@ spec:
       containers:
       - name: manager
         # IMPORTANT: Replace with your built image name
-        image: your-dockerhub-username/db-query-operator:latest
+        image: ghcr.io/konnektr-io/db-query-operator:latest
         imagePullPolicy: Always # Or IfNotPresent
         args:
         - "--leader-elect" # Enable leader election for production

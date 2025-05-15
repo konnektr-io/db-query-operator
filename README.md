@@ -96,13 +96,15 @@ kubectl apply -f db-credentials.yaml
 
 ### 4. Build and Push the Docker Image
 
-Build the operator's container image and push it to a container registry accessible by your Kubernetes cluster.
+Build the operator's container image and push it to GitHub Container Registry (GHCR).
 
 ```bash
-# Replace 'your-dockerhub-username' with your actual registry/username
-export IMG=your-dockerhub-username/ktrl-db-query:latest
-docker build -t ${IMG} .
-docker push ${IMG}
+# Log in to GHCR (if not already logged in)
+echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u <your-github-username> --password-stdin
+
+# Build and push the image
+docker build -t ghcr.io/konnektr-io/db-query-operator:latest .
+docker push ghcr.io/konnektr-io/db-query-operator:latest
 ```
 
 ### 5. Update Deployment Manifest
@@ -115,11 +117,20 @@ Find the `image:` line under `spec.template.spec.containers` and update it:
 ```yaml
 containers:
 - name: manager
-  image: your-dockerhub-username/ktrl-db-query:latest # <-- UPDATE THIS
+  image: ghcr.io/konnektr-io/db-query-operator:latest # <-- UPDATED
   # ... rest of the container spec
 ```
 
-### 6. Deploy the Operator
+### 6. GitHub Actions CI/CD
+
+This repository includes a GitHub Actions workflow that will automatically:
+
+* Run Go tests on every push and pull request to `main`.
+* Build and push the Docker image to GHCR (`ghcr.io/konnektr-io/db-query-operator`) on every push to `main`.
+
+You can find the workflow in `.github/workflows/ci.yaml`.
+
+### 7. Deploy the Operator
 
 Deploy the CRD, RBAC rules (ClusterRole, ServiceAccount, ClusterRoleBinding), and the Deployment itself. It's recommended to deploy the operator into its own namespace (e.g., `ktrl-db-query-system`).
 
@@ -145,7 +156,7 @@ kubectl apply -f config/manager/manager.yaml -n ktrl-db-query-system
 
 **Note:** The default RBAC rules grant broad permissions (`*/*` for create/update/patch/delete) to allow managing any resource type defined in the template. For production, **it is highly recommended to scope these permissions down** in `config/rbac/role.yaml` to only the specific resource types (Group, Version, Kind) that your templates will generate. Remember to regenerate and reapply the RBAC manifests if you change the `//+kubebuilder:rbac` markers in the controller.
 
-### 7. Verify the Operator Pod
+### 8. Verify the Operator Pod
 
 Check that the operator pod is running:
 

@@ -8,5 +8,5 @@ resources:
 # namespace: db-query-operator-system
 images:
 - name: controller # Default name used in manager.yaml if not specified
-  newName: your-dockerhub-username/db-query-operator # Your image
+  newName: ghcr.io/konnektr-io/db-query-operator # Your image
   newTag: latest # Your image tag
