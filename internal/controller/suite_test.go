@@ -78,8 +78,8 @@ var _ = BeforeSuite(func() {
 		err = k8sManager.Start(ctx)
 		Expect(err).ToNot(HaveOccurred(), "failed to run manager")
 	}()
-	// Set the watchedGVKPatterns for the test to allow ConfigMap
-	os.Setenv("WATCHED_GVK_PATTERNS", "v1/ConfigMap")
+	// Set the gvkPattern for the test to allow ConfigMap
+	os.Setenv("GVK_PATTERN", "v1/ConfigMap")
 })
 
 var _ = AfterSuite(func() {
