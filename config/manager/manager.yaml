@@ -33,7 +33,7 @@ spec:
         command:
         - /manager
         env:
-        - name: WATCHED_GVK_PATTERNS
+        - name: GVK_PATTERN
           value: "v1/ConfigMap"
         securityContext:
           allowPrivilegeEscalation: false

@@ -31,8 +31,8 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 
-	watchedGVKPatterns string
-	watchedGVKs        []schema.GroupVersionKind
+	gvkPattern string
+	registeredGVKs        []schema.GroupVersionKind
 )
 
 func parseWatchedGVKs(pattern string) ([]schema.GroupVersionKind, error) {
@@ -69,9 +69,9 @@ func init() {
 	utilruntime.Must(databasev1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 
-	watchedGVKPatterns = os.Getenv("WATCHED_GVK_PATTERNS")
-	if watchedGVKPatterns == "" {
-		flag.StringVar(&watchedGVKPatterns, "watched-gvk-patterns", "", "Semicolon-separated list of GVKs to watch, e.g. 'v1/ConfigMap;argoproj.io/v1alpha1/Application'")
+	gvkPattern = os.Getenv("GVK_PATTERN")
+	if gvkPattern == "" {
+		flag.StringVar(&gvkPattern, "gvk-pattern", "", "Semicolon-separated list of GVKs to watch, e.g. 'v1/Service;v1/ConfigMap;apps/v1/Deployment;networking.k8s.io/v1/Ingress'")
 	}
 }
 
@@ -120,7 +120,7 @@ func main() {
 
 	// Parse watched GVKs from flag or env
 	var err error
-	watchedGVKs, err = parseWatchedGVKs(watchedGVKPatterns)
+	registeredGVKs, err = parseWatchedGVKs(gvkPattern)
 	if err != nil {
 		setupLog.Error(err, "invalid watched-gvk-patterns")
 		os.Exit(1)
@@ -147,7 +147,7 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Log:    ctrl.Log.WithName("controllers").WithName("DatabaseQueryResource"),
-	}).SetupWithManagerAndGVKs(mgr, watchedGVKs); err != nil {
+	}).SetupWithManagerAndGVKs(mgr, registeredGVKs); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DatabaseQueryResource")
 		os.Exit(1)
 	}
