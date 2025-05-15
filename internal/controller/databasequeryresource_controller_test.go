@@ -1,10 +1,8 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright The Kubernetes authors.
-
 package controller
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	databasev1alpha1 "github.com/konnektr-io/db-query-operator/api/v1alpha1"
@@ -40,7 +38,7 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 			// Create a dummy Secret required by the controller
 			dummySecret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "irrelevant",
+					Name:      SecretName,
 					Namespace: ResourceNamespace,
 				},
 				Data: map[string][]byte{
@@ -62,10 +60,11 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 				},
 				Spec: databasev1alpha1.DatabaseQueryResourceSpec{
 					PollInterval: "10s",
+					Prune:        ptrBool(true),
 					Database: databasev1alpha1.DatabaseSpec{
 						Type: "postgres",
 						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
-							Name:      "irrelevant",
+							Name:      SecretName,
 							Namespace: ResourceNamespace,
 						},
 					},
@@ -103,7 +102,9 @@ data:
 			}, timeout, interval).Should(Succeed())
 
 			// Remove all rows from the mock DB to simulate the resource disappearing from the database
+			mock.mu.Lock()
 			mock.Rows = []util.RowResult{}
+			mock.mu.Unlock()
 
 			// Wait for more than the poll interval to allow the controller to reconcile and prune
 			time.Sleep(12 * time.Second)
@@ -125,17 +126,29 @@ type MockDatabaseClient struct {
 	Columns   []string
 	ExecCalls []string
 	FailQuery bool
+	mu        sync.RWMutex
 }
 
 func (m *MockDatabaseClient) Connect(ctx context.Context, config map[string]string) error { return nil }
 func (m *MockDatabaseClient) Query(ctx context.Context, query string) ([]util.RowResult, []string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if m.FailQuery {
 		return nil, nil, context.DeadlineExceeded
 	}
-	return m.Rows, m.Columns, nil
+	rowsCopy := make([]util.RowResult, len(m.Rows))
+	copy(rowsCopy, m.Rows)
+	columnsCopy := make([]string, len(m.Columns))
+	copy(columnsCopy, m.Columns)
+	return rowsCopy, columnsCopy, nil
 }
 func (m *MockDatabaseClient) Exec(ctx context.Context, query string) error {
+	m.mu.Lock()
 	m.ExecCalls = append(m.ExecCalls, query)
+	m.mu.Unlock()
 	return nil
 }
 func (m *MockDatabaseClient) Close(ctx context.Context) error { return nil }
+
+// Helper for pointer to bool
+func ptrBool(b bool) *bool { return &b }
