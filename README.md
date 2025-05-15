@@ -394,6 +394,7 @@ You can deploy the operator using Helm for a more flexible and configurable inst
 helm install db-query-operator ./helm \
   --set image.tag=<version> \
   --set namespaceOverride=<namespace> \
+  --set gvkPattern="v1/ConfigMap;apps/v1/Deployment" \
   --create-namespace
 ```
 
