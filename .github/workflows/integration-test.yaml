@@ -36,6 +36,8 @@ jobs:
         run: |
           go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
           setup-envtest use 1.29.x --bin-dir=./envtest-bin
+          BIN_DIR=$(find ./envtest-bin -type d -name '*-linux-amd64' | head -n1)
+          cp $BIN_DIR/* ./envtest-bin/
           echo "KUBEBUILDER_ASSETS=$PWD/envtest-bin" >> $GITHUB_ENV
       - name: Run integration tests
         env:
