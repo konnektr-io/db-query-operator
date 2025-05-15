@@ -49,6 +49,7 @@ type DatabaseQueryResourceReconciler struct {
 	Log    logr.Logger // Add logger field
 
 	DBClientFactory func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error)
+	OwnedGVKs       []schema.GroupVersionKind // Add this field to hold owned GVKs
 }
 
 //+kubebuilder:rbac:groups=konnektr.io,resources=databasequeryresources,verbs=get;list;watch;create;update;patch;delete
@@ -220,7 +221,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	var pruneErrors []string
 	if dbqr.Spec.GetPrune() {
 		log.Info("Pruning enabled, checking for stale resources")
-		pruneErrors = r.pruneStaleResources(ctx, dbqr, managedResourceKeys)
+		pruneErrors = r.pruneStaleResources(ctx, dbqr, managedResourceKeys, r.OwnedGVKs)
 		if len(pruneErrors) > 0 {
 			log.Info("Errors occurred during pruning", "error", strings.Join(pruneErrors, "; "))
 		} else {
@@ -352,7 +353,7 @@ func (r *DatabaseQueryResourceReconciler) getDBConfig(ctx context.Context, dbqr 
 }
 
 // pruneStaleResources lists all resources managed by the CR and deletes those not found in the current desired state.
-func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, currentKeys map[string]bool) []string {
+func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, currentKeys map[string]bool, ownedGVKs []schema.GroupVersionKind) []string {
 	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
 	var errors []string
 
@@ -364,25 +365,12 @@ func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Contex
 
 	log.Info("Listing potentially managed resources for pruning")
 
-	// Define a set of common GVKs to check. This list might need adjustment.
-	// Ideally, the template itself could hint at the GVK being created.
-	gvksToCheck := []schema.GroupVersionKind{
-		{Group: "", Version: "v1", Kind: "ConfigMap"},
-		{Group: "", Version: "v1", Kind: "Secret"},
-		{Group: "", Version: "v1", Kind: "Service"},
-		{Group: "apps", Version: "v1", Kind: "Deployment"},
-		{Group: "apps", Version: "v1", Kind: "StatefulSet"},
-		{Group: "batch", Version: "v1", Kind: "Job"},
-		{Group: "batch", Version: "v1", Kind: "CronJob"},
-		// Add more common types or types you expect to create
-	}
-
 	// Label selector to find resources managed by this specific CR instance
 	selector := labels.SelectorFromSet(labels.Set{
 		ManagedByLabel: dbqr.Name,
 	})
 
-	for _, gvk := range gvksToCheck {
+	for _, gvk := range ownedGVKs {
 		list := &unstructured.UnstructuredList{}
 		list.SetGroupVersionKind(gvk) // Set GVK for List operation
 

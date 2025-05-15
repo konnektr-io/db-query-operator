@@ -124,7 +124,7 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	webhookServer := webhookserver.NewServer(webhookserver.Options{ // Corrected type name
+	webhookServer := webhookserver.NewServer(webhookserver.Options{
 		TLSOpts: tlsOpts,
 	})
 
@@ -144,7 +144,7 @@ func main() {
 			SecureServing: secureMetrics,
 			TLSOpts:       tlsOpts,
 		},
-		WebhookServer:          webhookServer, // Pass the server instance
+		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "dbqueryoperator.konnektr.io",
@@ -158,6 +158,7 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Log:    ctrl.Log.WithName("controllers").WithName("DatabaseQueryResource"),
+		OwnedGVKs: registeredGVKs,
 	}).SetupWithManagerAndGVKs(mgr, registeredGVKs); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DatabaseQueryResource")
 		os.Exit(1)

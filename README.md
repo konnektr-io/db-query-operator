@@ -1,11 +1,11 @@
 # KtrlPlane Database Query Operator
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-<!-- Add other badges if applicable: build status, code coverage, etc. -->
+[![Build Status](https://github.com/konnektr-io/db-query-operator/actions/workflows/build-push.yaml/badge.svg)](https://github.com/konnektr-io/db-query-operator/actions/workflows/build-push.yaml)
 
 ## Overview
 
-KtrlDBQuery is a Kubernetes operator designed to manage Kubernetes resources based on the results of a database query. It periodically polls a specified database (currently PostgreSQL), executes a user-defined SQL query, and uses a Go template to render Kubernetes manifests for each row returned by the query.
+The KtrlPlane Database Query Operator is a Kubernetes operator designed to manage Kubernetes resources based on the results of a database query. It periodically polls a specified database (currently PostgreSQL), executes a user-defined SQL query, and uses a Go template to render Kubernetes manifests for each row returned by the query.
 
 The operator handles the reconciliation loop, ensuring that the resources in the cluster match the desired state defined by the database query results and the template. This allows for dynamic configuration and resource management driven directly by your application's database state.
 
@@ -25,21 +25,42 @@ The operator handles the reconciliation loop, ensuring that the resources in the
 
 ## Prerequisites
 
-* **Go:** Version 1.19+ (for building/development)
-* **Docker:** For building the container image.
 * **kubectl:** For interacting with the Kubernetes cluster.
+* **Helm:** For installing the operator.
 * **Kubernetes Cluster:** Access to a Kubernetes cluster (e.g., kind, Minikube, EKS, GKE, AKS).
 * **PostgreSQL Database:** A running PostgreSQL instance accessible from the Kubernetes cluster.
-* **controller-gen:** Kubernetes code generator tool (`go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest`). Required for development.
-* **kustomize:** (Usually included with `kubectl` v1.14+) Used for building and applying manifests.
 
 ## Getting Started
 
-### 1. Clone the Repository
+### 1. Install the Operator using Helm
+
+You can deploy the operator using Helm from the official chart repository:
 
 ```bash
-git clone <your-repository-url>
-cd <repository-directory> # e.g., cd db-query-operator
+helm repo add konnektr https://charts.konnektr.io
+helm repo update
+helm install db-query-operator konnektr/db-query-operator \
+  --namespace <namespace> \
+  --create-namespace \
+  --set image.tag=<version> \
+  --set gvkPattern="v1/ConfigMap;apps/v1/Deployment" \
+  --set installCRDs=true
+```
+
+* By default, the image tag will match the Helm chart's `appVersion`.
+* You can override any value in `values.yaml` using `--set` or a custom `values.yaml`.
+* The CRDs are not installed by default; install with the installCRDs parameter or manually as described below.
+
+#### Install the CRDs (required)
+
+```bash
+kubectl apply -f https://github.com/konnektr-io/db-query-operator/releases/latest/download/crds.yaml
+```
+
+#### Uninstall
+
+```bash
+helm uninstall db-query-operator -n <namespace>
 ```
 
 ### 2. Prepare the Database
@@ -63,7 +84,19 @@ INSERT INTO users (username, email, status) VALUES
   ('bob', 'bob@example.com', 'active');
 ```
 
-### 3. Create Database Credentials Secret
+### 3. Verify the Operator Pod
+
+Check that the operator pod is running:
+
+```bash
+kubectl get pods -n <namespace>
+# Look for a pod named like controller-manager-...
+
+# View logs
+kubectl logs -n <namespace> -l control-plane=controller-manager -f
+```
+
+### 4. Create Database Credentials Secret
 
 Create a Kubernetes Secret containing the connection details for your PostgreSQL database. The operator will read credentials from this Secret.
 
@@ -92,80 +125,6 @@ Apply the secret:
 
 ```bash
 kubectl apply -f db-credentials.yaml
-```
-
-### 4. Build and Push the Docker Image
-
-Build the operator's container image and push it to GitHub Container Registry (GHCR).
-
-```bash
-# Log in to GHCR (if not already logged in)
-echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u <your-github-username> --password-stdin
-
-# Build and push the image
-docker build -t ghcr.io/konnektr-io/db-query-operator:latest .
-docker push ghcr.io/konnektr-io/db-query-operator:latest
-```
-
-### 5. Update Deployment Manifest
-
-Ensure the operator Deployment manifest (`config/manager/manager.yaml`) points to the image you just pushed. If using `kustomize`, update `config/manager/kustomization.yaml`.
-
-**Example (editing `config/manager/manager.yaml` directly):**
-Find the `image:` line under `spec.template.spec.containers` and update it:
-
-```yaml
-containers:
-- name: manager
-  image: ghcr.io/konnektr-io/db-query-operator:latest # <-- UPDATED
-  # ... rest of the container spec
-```
-
-### 6. GitHub Actions CI/CD
-
-This repository includes a GitHub Actions workflow that will automatically:
-
-* Run Go tests on every push and pull request to `main`.
-* Build and push the Docker image to GHCR (`ghcr.io/konnektr-io/db-query-operator`) on every push to `main`.
-
-You can find the workflow in `.github/workflows/ci.yaml`.
-
-### 7. Deploy the Operator
-
-Deploy the CRD, RBAC rules (ClusterRole, ServiceAccount, ClusterRoleBinding), and the Deployment itself. It's recommended to deploy the operator into its own namespace (e.g., `ktrl-db-query-system`).
-
-```bash
-# Create the namespace (optional, but recommended)
-kubectl create namespace ktrl-db-query-system
-
-# Apply the CRD
-kubectl apply -f config/crd/bases/konnektr.io_databasequeryresources.yaml
-
-# Apply RBAC components (adjust namespace if you chose a different one)
-kubectl apply -f config/rbac/service_account.yaml -n ktrl-db-query-system
-kubectl apply -f config/rbac/role.yaml
-kubectl apply -f config/rbac/role_binding.yaml
-
-# Apply the Deployment (adjust namespace if you chose a different one)
-kubectl apply -f config/manager/manager.yaml -n ktrl-db-query-system
-
-# --- OR using Kustomize (if config/default/kustomization.yaml is set up) ---
-# Note: You might need to edit config/default/kustomization.yaml to set the namespace
-# kustomize build config/default | kubectl apply -f -
-```
-
-**Note:** The default RBAC rules grant broad permissions (`*/*` for create/update/patch/delete) to allow managing any resource type defined in the template. For production, **it is highly recommended to scope these permissions down** in `config/rbac/role.yaml` to only the specific resource types (Group, Version, Kind) that your templates will generate. Remember to regenerate and reapply the RBAC manifests if you change the `//+kubebuilder:rbac` markers in the controller.
-
-### 8. Verify the Operator Pod
-
-Check that the operator pod is running:
-
-```bash
-kubectl get pods -n ktrl-db-query-system
-# Look for a pod named like controller-manager-...
-
-# View logs
-kubectl logs -n ktrl-db-query-system -l control-plane=controller-manager -f
 ```
 
 ## Usage
@@ -296,23 +255,6 @@ In this example:
 * The `template` generates a Kubernetes `Deployment` for each row.
 * The `statusUpdateQueryTemplate` updates the `status` and `error_message` fields in the database based on the reconciliation outcome.
 
-### Handling Timing for Status Updates
-
-To ensure the database reflects the actual state of the Kubernetes resources:
-
-1. **Polling for Resource Status:**
-   * After applying resources, the operator can periodically check the status of the managed resources (e.g., `Deployment` status conditions).
-   * Use the Kubernetes API to fetch the resource's status and update the database accordingly.
-
-2. **Event-Driven Updates:**
-   * Implement a watch mechanism to listen for changes to the managed resources.
-   * When a resource's status changes, trigger the status update query to reflect the new state in the database.
-
-3. **Combining Polling and Events:**
-   * Use a combination of periodic polling and event-driven updates to ensure timely and accurate status synchronization.
-
-Would you like me to implement a watch mechanism for event-driven updates or periodic polling for resource status?
-
 ## CRD Specification (`DatabaseQueryResourceSpec`)
 
 * `pollInterval` (string, required): Duration string specifying how often to poll the database (e.g., `"30s"`, `"5m"`, `"1h"`).
@@ -332,17 +274,22 @@ Would you like me to implement a watch mechanism for event-driven updates or per
 * `template` (string, required): A Go template string that renders a valid Kubernetes resource manifest (YAML or JSON).
   * **Template Context:** The template receives a map with the following structure:
 
-```
+```go
 {
     "Row": {
-    "column1_name": value1,
-    "column2_name": value2,
-    // ... other columns from the query result
+        "column1_name": value1,
+        "column2_name": value2,
+        // ... other columns from the query result
     },
     "Metadata": { // Metadata of the parent DatabaseQueryResource CR
         "Name": "cr-name",
         "Namespace": "cr-namespace"
         // ... other metav1.ObjectMeta fields
+    }
+    // Only for status update queries
+    "Status": {
+        "State": "success|error",
+        "Message": "optional error message"
     }
 }
 ```
@@ -378,40 +325,6 @@ Would you like me to implement a watch mechanism for event-driven updates or per
 
 Contributions are welcome! Please follow standard GitHub practices: fork the repository, create a feature branch, make your changes, and submit a pull request. Ensure your code builds, passes any tests, and includes updates to documentation if necessary.
 
-<!-- Add more specific contribution guidelines if desired -->
-
 ## License
 
 This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
-
-## Helm Chart Installation
-
-You can deploy the operator using Helm for a more flexible and configurable installation.
-
-### 1. Add the Helm chart (local dev)
-
-```bash
-helm install db-query-operator ./helm \
-  --set image.tag=<version> \
-  --set namespaceOverride=<namespace> \
-  --set gvkPattern="v1/ConfigMap;apps/v1/Deployment" \
-  --create-namespace
-```
-
-* By default, the image tag will match the Helm chart's `appVersion`.
-* You can override any value in `values.yaml` using `--set` or a custom `values.yaml`.
-* The CRDs are not installed by default; install them manually as described below.
-
-### 2. Install the CRDs (required)
-
-```bash
-kubectl apply -f https://github.com/konnektr-io/db-query-operator/releases/latest/download/crds.yaml
-```
-
-### 3. Create your DatabaseQueryResource CR and Secret as described above
-
-### 4. Uninstall
-
-```bash
-helm uninstall db-query-operator
-```
