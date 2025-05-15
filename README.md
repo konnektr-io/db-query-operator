@@ -272,29 +272,36 @@ In this example:
     * `sslModeKey` (string, optional): Key in the Secret for the SSL mode. Defaults to `"sslmode"`. If the key is not found and `sslModeKey` is not specified, `prefer` is used.
 * `query` (string, required): The SQL query to execute. It should be a read-only query.
 * `template` (string, required): A Go template string that renders a valid Kubernetes resource manifest (YAML or JSON).
-  * **Template Context:** The template receives a map with the following structure:
+  * **Template Context:** The template receives a map with the following structure for the query:
 
-```go
-{
-    "Row": {
-        "column1_name": value1,
-        "column2_name": value2,
-        // ... other columns from the query result
-    },
-    "Metadata": { // Metadata of the parent DatabaseQueryResource CR
-        "Name": "cr-name",
-        "Namespace": "cr-namespace"
-        // ... other metav1.ObjectMeta fields
-    }
-    // Only for status update queries
-    "Status": {
-        "State": "success|error",
-        "Message": "optional error message"
-    }
-}
-```
+  ```go
+  {
+      "Row": {
+          "column1_name": value1,
+          "column2_name": value2,
+          // ... other columns from the query result
+      }
+  }
+  ```
 
-* You can use standard Go template functions (sprig library is *not* included by default, but could be added). Access row data via `.Row.column_name`. Access parent CR metadata via `.Metadata.Namespace`, etc.
+  * **Template Context:** The template receives a map with the following structure for the status update query:
+
+  ```go
+  {
+      "Resource": { // The individual child resource being updated
+          "apiVersion": "v1/ConfigMap",
+          "kind": "ConfigMap",
+          "metadata": {
+              "name": "user-alice-config",
+              "namespace": "default",
+              // ... other metadata fields
+          },
+          // ... other resource fields
+      },
+  }
+  ```
+
+  * You can use standard Go template functions. Access row data via `.Row.column_name`. Access parent CR metadata via `.Metadata.Namespace`, etc.
 
 ## Development
 

@@ -52,6 +52,19 @@ type DatabaseQueryResourceReconciler struct {
 	OwnedGVKs       []schema.GroupVersionKind // Add this field to hold owned GVKs
 }
 
+// Key for context value to indicate child resource event
+var childResourceEventKey = struct{}{}
+
+// Info about the triggering child resource
+// Used to pass to context for status update
+// Only minimal info needed for status update
+// (GVK, namespace, name)
+type childResourceInfo struct {
+	GVK       schema.GroupVersionKind
+	Namespace string
+	Name      string
+}
+
 //+kubebuilder:rbac:groups=konnektr.io,resources=databasequeryresources,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=konnektr.io,resources=databasequeryresources/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=konnektr.io,resources=databasequeryresources/finalizers,verbs=update
@@ -61,10 +74,78 @@ type DatabaseQueryResourceReconciler struct {
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx) // Use context-aware logger
-	r.Log = log                 // Store logger for helper methods
-
+	log := log.FromContext(ctx)
+	r.Log = log
 	log.Info("Reconciling DatabaseQueryResource", "Request.Namespace", req.Namespace, "Request.Name", req.Name)
+
+	// Check if this is a child resource event and handle status updates
+	if v := ctx.Value(childResourceEventKey); v != nil {
+		// Child resource event: only run status update query and update parent status
+		info, ok := v.(childResourceInfo)
+		if !ok {
+			log.Error(nil, "childResourceEventKey context value is not childResourceInfo")
+			return ctrl.Result{}, nil
+		}
+		// Fetch parent DatabaseQueryResource
+		dbqr := &databasev1alpha1.DatabaseQueryResource{}
+		if err := r.Get(ctx, req.NamespacedName, dbqr); err != nil {
+			if apierrors.IsNotFound(err) {
+				log.Info("DatabaseQueryResource not found. Ignoring since object must be deleted.")
+				return ctrl.Result{}, nil
+			}
+			log.Error(err, "Failed to get DatabaseQueryResource")
+			return ctrl.Result{}, err
+		}
+		// Fetch the child resource
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(info.GVK)
+		obj.SetNamespace(info.Namespace)
+		obj.SetName(info.Name)
+		if err := r.Get(ctx, types.NamespacedName{Namespace: info.Namespace, Name: info.Name}, obj); err != nil {
+			log.Error(err, "Failed to get child resource for status update", "GVK", info.GVK, "Namespace", info.Namespace, "Name", info.Name)
+			return ctrl.Result{}, nil
+		}
+		// Run status update query if defined
+		if dbqr.Spec.StatusUpdateQueryTemplate != "" {
+			dbConfig, err := r.getDBConfig(ctx, dbqr)
+			if err != nil {
+				log.Error(err, "Failed to get database configuration for status update")
+				return ctrl.Result{}, nil
+			}
+			dbClient, err := r.getOrCreateDBClient(ctx, dbqr, dbConfig)
+			if err != nil {
+				log.Error(err, "Failed to get database client for status update")
+				return ctrl.Result{}, nil
+			}
+			defer dbClient.Close(ctx)
+			tmpl, err := template.New("statusUpdateQuery").Funcs(sprig.TxtFuncMap()).Parse(dbqr.Spec.StatusUpdateQueryTemplate)
+			if err != nil {
+				log.Error(err, "Failed to parse status update query template (child event)")
+				return ctrl.Result{}, nil
+			}
+			var queryBuffer bytes.Buffer
+			err = tmpl.Execute(&queryBuffer, map[string]interface{}{
+				"Resource": obj.Object,
+			})
+			if err != nil {
+				log.Error(err, "Failed to render status update query (child event)")
+				return ctrl.Result{}, nil
+			}
+			err = dbClient.Exec(ctx, queryBuffer.String())
+			if err != nil {
+				log.Error(err, "Failed to execute status update query (child event)", "query", queryBuffer.String())
+			} else {
+				log.Info("Successfully updated status in database (child event)", "query", queryBuffer.String())
+			}
+		}
+		// Always update parent status to reflect child change
+		setCondition(dbqr, ConditionReconciled, metav1.ConditionTrue, "ChildResourceChanged", "Status updated due to child resource event")
+		dbqr.Status.ObservedGeneration = dbqr.Generation
+		if err := r.Status().Update(ctx, dbqr); err != nil {
+			log.Error(err, "Failed to update DatabaseQueryResource status (child event)")
+		}
+		return ctrl.Result{}, nil
+	}
 
 	// 1. Fetch the DatabaseQueryResource instance
 	dbqr := &databasev1alpha1.DatabaseQueryResource{}
@@ -110,37 +191,14 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	}
 
 	// 4. Select and connect to the appropriate database client
-	var dbClient util.DatabaseClient
-	if r.DBClientFactory != nil {
-		dbClient, err = r.DBClientFactory(ctx, dbqr.Spec.Database.Type, dbConfig)
-		if err != nil {
-			log.Error(err, "Failed to create database client via factory")
-			setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "DBClientFactoryError", err.Error())
-			setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Failed to create DB client")
-			return ctrl.Result{}, nil
-		}
-	} else {
-		switch strings.ToLower(dbqr.Spec.Database.Type) {
-		case "postgres", "postgresql", "pgx", "":
-			dbClient = &util.PostgresDatabaseClient{}
-		// case "mysql":
-		// 	dbClient = &util.MySQLDatabaseClient{}
-		default:
-			log.Error(fmt.Errorf("unsupported database type: %s", dbqr.Spec.Database.Type), "Unsupported database type")
-			setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "UnsupportedDB", "Unsupported database type")
-			setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Unsupported database type")
-			return ctrl.Result{}, nil
-		}
-		if err := dbClient.Connect(ctx, dbConfig); err != nil {
-			log.Error(err, "Failed to connect to database", "host", dbConfig["host"], "db", dbConfig["dbname"])
-			setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "ConnectionError", err.Error())
-			setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Failed to connect to DB")
-			return ctrl.Result{RequeueAfter: pollInterval}, nil
-		}
+	dbClient, err := r.getOrCreateDBClient(ctx, dbqr, dbConfig)
+	if err != nil {
+		log.Error(err, "Failed to get database client")
+		setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "DBClientError", err.Error())
+		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Failed to create/connect DB client")
+		return ctrl.Result{}, nil
 	}
-	if r.DBClientFactory == nil {
-		defer dbClient.Close(ctx)
-	}
+	defer dbClient.Close(ctx)
 	log.Info("Successfully connected to database", "host", dbConfig["host"], "db", dbConfig["dbname"])
 	setCondition(dbqr, ConditionDBConnected, metav1.ConditionTrue, "Connected", "Successfully connected to the database")
 
@@ -253,36 +311,6 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	now := metav1.Now()
 	dbqr.Status.LastPollTime = &now
 	setCondition(dbqr, ConditionReconciled, metav1.ConditionTrue, "Success", "Successfully queried DB and reconciled resources")
-
-	// After processing rows and applying resources, handle status updates
-	if dbqr.Spec.StatusUpdateQueryTemplate != "" {
-		tmpl, err := template.New("statusUpdateQuery").Funcs(sprig.TxtFuncMap()).Parse(dbqr.Spec.StatusUpdateQueryTemplate)
-		if err != nil {
-			log.Error(err, "Failed to parse status update query template")
-		} else {
-			for _, rowData := range processedRows { // Assume processedRows contains data for successfully applied resources
-				var queryBuffer bytes.Buffer
-				err = tmpl.Execute(&queryBuffer, map[string]interface{}{
-					"Row": rowData,
-					"Status": map[string]interface{}{
-						"State":   "Success", // or "Error" based on the outcome
-						"Message": "",        // or the error message
-					},
-				})
-				if err != nil {
-					log.Error(err, "Failed to render status update query")
-					continue
-				}
-
-				err = dbClient.Exec(ctx, queryBuffer.String())
-				if err != nil {
-					log.Error(err, "Failed to execute status update query", "query", queryBuffer.String())
-				} else {
-					log.Info("Successfully updated status in database", "query", queryBuffer.String())
-				}
-			}
-		}
-	}
 
 	return ctrl.Result{RequeueAfter: pollInterval}, nil
 }
@@ -503,6 +531,7 @@ func (r *DatabaseQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manag
 	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
 		For(&databasev1alpha1.DatabaseQueryResource{})
 
+	// Custom event handler for owned resources
 	for _, gvk := range ownedGVKs {
 		u := &unstructured.Unstructured{}
 		u.SetGroupVersionKind(gvk)
@@ -510,4 +539,27 @@ func (r *DatabaseQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manag
 	}
 
 	return controllerBuilder.Complete(r)
+}
+
+// getOrCreateDBClient returns a connected DatabaseClient using the factory or default logic
+func (r *DatabaseQueryResourceReconciler) getOrCreateDBClient(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, dbConfig map[string]string) (util.DatabaseClient, error) {
+	if r.DBClientFactory != nil {
+		return r.DBClientFactory(ctx, dbqr.Spec.Database.Type, dbConfig)
+	}
+	switch strings.ToLower(dbqr.Spec.Database.Type) {
+	case "postgres", "postgresql", "pgx", "":
+		dbClient := &util.PostgresDatabaseClient{}
+		if err := dbClient.Connect(ctx, dbConfig); err != nil {
+			return nil, err
+		}
+		return dbClient, nil
+	// case "mysql":
+	// 	dbClient := &util.MySQLDatabaseClient{}
+	// 	if err := dbClient.Connect(ctx, dbConfig); err != nil {
+	// 		return nil, err
+	// 	}
+	// 	return dbClient, nil
+	default:
+		return nil, fmt.Errorf("unsupported database type: %s", dbqr.Spec.Database.Type)
+	}
 }
