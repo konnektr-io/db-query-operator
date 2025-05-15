@@ -267,7 +267,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		errMsg := strings.Join(finalErrors, "; ")
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "ProcessingError", truncateError(errMsg, 1024))
 		dbqr.Status.LastPollTime = nil // Clear last poll time on error? Or keep the last successful one? Let's keep it.
-		log.Error(fmt.Errorf(errMsg), "Reconciliation failed with errors")
+		log.Error(fmt.Errorf("%s", errMsg), "Reconciliation failed with errors")
 		return ctrl.Result{RequeueAfter: pollInterval}, fmt.Errorf("reconciliation failed: %s", errMsg) // Requeue after interval even on error
 	}
 
