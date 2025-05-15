@@ -383,3 +383,34 @@ Contributions are welcome! Please follow standard GitHub practices: fork the rep
 ## License
 
 This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
+
+## Helm Chart Installation
+
+You can deploy the operator using Helm for a more flexible and configurable installation.
+
+### 1. Add the Helm chart (local dev)
+
+```bash
+helm install db-query-operator ./helm \
+  --set image.tag=<version> \
+  --set namespaceOverride=<namespace> \
+  --create-namespace
+```
+
+* By default, the image tag will match the Helm chart's `appVersion`.
+* You can override any value in `values.yaml` using `--set` or a custom `values.yaml`.
+* The CRDs are not installed by default; install them manually as described below.
+
+### 2. Install the CRDs (required)
+
+```bash
+kubectl apply -f https://github.com/konnektr-io/db-query-operator/releases/latest/download/crds.yaml
+```
+
+### 3. Create your DatabaseQueryResource CR and Secret as described above
+
+### 4. Uninstall
+
+```bash
+helm uninstall db-query-operator
+```
