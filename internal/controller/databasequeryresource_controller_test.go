@@ -15,6 +15,7 @@ import (
 	"github.com/konnektr-io/db-query-operator/internal/util"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -28,7 +29,7 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 		interval = time.Millisecond * 250
 	)
 
-	Context("When reconciling a DatabaseQueryResource", func() {
+	Describe("When reconciling a DatabaseQueryResource", func() {
 		It("Should create a ConfigMap with correct labels and update status using mock DB", func() {
 			ctx := context.Background()
 			mock := &MockDatabaseClient{
@@ -257,6 +258,123 @@ data:
 					}
 				}, timeout, interval).Should(Succeed())
 			}
+		})
+	})
+
+	Describe("DatabaseQueryResource child resource state change", func() {
+		It("should update parent status and execute status update query when a Deployment changes state", func() {
+			ctx := context.Background()
+			mock := &MockDatabaseClient{
+				Rows: []util.RowResult{
+					{"name": "my-deploy", "status": "Pending"},
+				},
+				Columns: []string{"name", "status"},
+			}
+
+			TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
+				return mock, nil
+			}
+
+			// Create a dummy Secret required by the controller
+			dummySecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deploy-secret",
+					Namespace: ResourceNamespace,
+				},
+				Data: map[string][]byte{
+					"host":     []byte("localhost"),
+					"port":     []byte("5432"),
+					"username": []byte("testuser"),
+					"password": []byte("testpass"),
+					"dbname":   []byte("testdb"),
+					"sslmode":  []byte("disable"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, dummySecret)).To(Succeed())
+
+			// Create the DatabaseQueryResource with a Deployment template and status update query
+			statusUpdateQuery := `UPDATE deployments SET status = '{{ .Resource.status.availableReplicas | default 0 }}' WHERE name = '{{ .Resource.metadata.name }}';`
+			dbqr := &databasev1alpha1.DatabaseQueryResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deploy-dbqr",
+					Namespace: ResourceNamespace,
+				},
+				Spec: databasev1alpha1.DatabaseQueryResourceSpec{
+					PollInterval: "10s",
+					Prune:        ptrBool(true),
+					Database: databasev1alpha1.DatabaseSpec{
+						Type: "postgres",
+						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
+							Name:      "deploy-secret",
+							Namespace: ResourceNamespace,
+						},
+					},
+					Query: "SELECT 'my-deploy' as name, 'Pending' as status",
+					Template: `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Row.name }}
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Row.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Row.name }}
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.14.2
+        ports:
+        - containerPort: 80`,
+					StatusUpdateQueryTemplate: statusUpdateQuery,
+				},
+			}
+			Expect(k8sClient.Create(ctx, dbqr)).To(Succeed())
+
+			// Wait for the Deployment to be created
+			deployName := "my-deploy"
+			deployLookup := types.NamespacedName{Name: deployName, Namespace: ResourceNamespace}
+			createdDeploy := &appsv1.Deployment{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, deployLookup, createdDeploy)).To(Succeed())
+			}, timeout, interval).Should(Succeed())
+
+			// Wait for the Deployment to become available (ready)
+			Eventually(func(g Gomega) {
+				g.Expect(createdDeploy.Status.AvailableReplicas).To(BeNumerically(">=", 1))
+			}, timeout*2, interval).Should(Succeed())
+
+			// Wait for the parent dbqr status to be updated due to child event
+			lookupKey := types.NamespacedName{Name: "deploy-dbqr", Namespace: ResourceNamespace}
+			created := &databasev1alpha1.DatabaseQueryResource{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+				// Should have a condition for child resource change
+				found := false
+				for _, cond := range created.Status.Conditions {
+					if cond.Reason == "ChildResourceChanged" {
+						found = true
+					}
+				}
+				g.Expect(found).To(BeTrue())
+			}, timeout*2, interval).Should(Succeed())
+
+			// Check that the mock DB Exec was called with the expected status update query
+			Eventually(func(g Gomega) {
+				mock.mu.RLock()
+				defer mock.mu.RUnlock()
+				found := false
+				for _, q := range mock.ExecCalls {
+					if strings.Contains(q, "UPDATE deployments SET status") && strings.Contains(q, "my-deploy") {
+						found = true
+					}
+				}
+				g.Expect(found).To(BeTrue())
+			}, timeout*2, interval).Should(Succeed())
 		})
 	})
 
