@@ -177,8 +177,12 @@ metadata:
   name: user-cm-{{ .Row.id }}
   namespace: default
   labels:
-    {{- if eq (mod .Row.id 2) 0 }}even: "true"{{ else }}odd: "true"{{ end }}
-    user-name: {{ .Row.name | lower }}
+    {{- if eq (mod .Row.id 2) 0 }}
+    even: "true"
+    {{- else }}
+    odd: "true"
+    {{- end }}
+    user-name: {{ .Row.name }}
 data:
   greeting: "Hello, {{ .Row.name | title }}! You are {{ .Row.age }} years old."
   id: "{{ .Row.id }}"
