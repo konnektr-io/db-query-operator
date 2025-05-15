@@ -344,6 +344,8 @@ spec:
 			}, timeout, interval).Should(Succeed())
 
 			// Patch the Deployment status to simulate readiness
+			createdDeploy.Status.Replicas = 1
+			createdDeploy.Status.ReadyReplicas = 1
 			createdDeploy.Status.AvailableReplicas = 1
 			Expect(k8sClient.Status().Update(ctx, createdDeploy)).To(Succeed())
 
