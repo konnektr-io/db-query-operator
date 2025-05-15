@@ -38,10 +38,16 @@ const (
 )
 
 // DatabaseQueryResourceReconciler reconciles a DatabaseQueryResource object
+// Add DBClientFactory for testability
+// DBClientFactory can be set in tests to inject a mock database client
+// If nil, the default logic is used
+
 type DatabaseQueryResourceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Log    logr.Logger // Add logger field
+
+	DBClientFactory func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error)
 }
 
 //+kubebuilder:rbac:groups=konnektr.io,resources=databasequeryresources,verbs=get;list;watch;create;update;patch;delete
@@ -103,24 +109,36 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 
 	// 4. Select and connect to the appropriate database client
 	var dbClient util.DatabaseClient
-	switch strings.ToLower(dbqr.Spec.Database.Type) {
-	case "postgres", "postgresql", "pgx", "":
-		dbClient = &util.PostgresDatabaseClient{}
-	// case "mysql":
-	// 	dbClient = &util.MySQLDatabaseClient{}
-	default:
-		log.Error(fmt.Errorf("unsupported database type: %s", dbqr.Spec.Database.Type), "Unsupported database type")
-		setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "UnsupportedDB", "Unsupported database type")
-		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Unsupported database type")
-		return ctrl.Result{}, nil
+	if r.DBClientFactory != nil {
+		dbClient, err = r.DBClientFactory(ctx, dbqr.Spec.Database.Type, dbConfig)
+		if err != nil {
+			log.Error(err, "Failed to create database client via factory")
+			setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "DBClientFactoryError", err.Error())
+			setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Failed to create DB client")
+			return ctrl.Result{}, nil
+		}
+	} else {
+		switch strings.ToLower(dbqr.Spec.Database.Type) {
+		case "postgres", "postgresql", "pgx", "":
+			dbClient = &util.PostgresDatabaseClient{}
+		// case "mysql":
+		// 	dbClient = &util.MySQLDatabaseClient{}
+		default:
+			log.Error(fmt.Errorf("unsupported database type: %s", dbqr.Spec.Database.Type), "Unsupported database type")
+			setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "UnsupportedDB", "Unsupported database type")
+			setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Unsupported database type")
+			return ctrl.Result{}, nil
+		}
+		if err := dbClient.Connect(ctx, dbConfig); err != nil {
+			log.Error(err, "Failed to connect to database", "host", dbConfig["host"], "db", dbConfig["dbname"])
+			setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "ConnectionError", err.Error())
+			setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Failed to connect to DB")
+			return ctrl.Result{RequeueAfter: pollInterval}, nil
+		}
 	}
-	if err := dbClient.Connect(ctx, dbConfig); err != nil {
-		log.Error(err, "Failed to connect to database", "host", dbConfig["host"], "db", dbConfig["dbname"])
-		setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "ConnectionError", err.Error())
-		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Failed to connect to DB")
-		return ctrl.Result{RequeueAfter: pollInterval}, nil
+	if r.DBClientFactory == nil {
+		defer dbClient.Close(ctx)
 	}
-	defer dbClient.Close(ctx)
 	log.Info("Successfully connected to database", "host", dbConfig["host"], "db", dbConfig["dbname"])
 	setCondition(dbqr, ConditionDBConnected, metav1.ConditionTrue, "Connected", "Successfully connected to the database")
 

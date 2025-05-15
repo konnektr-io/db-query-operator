@@ -30,6 +30,9 @@ var (
 	testEnv   *envtest.Environment
 	cfg       *rest.Config
 	k8sClient client.Client // You'll be using this client in your tests.
+
+	// Expose the running reconciler for test injection
+	TestReconciler *DatabaseQueryResourceReconciler
 )
 
 func TestControllers(t *testing.T) {
@@ -72,10 +75,11 @@ var _ = BeforeSuite(func() {
 	registeredGVKs, err := util.ParseGVKs(gvkPattern)
 	Expect(err).ToNot(HaveOccurred())
 
-	err = (&DatabaseQueryResourceReconciler{
+	TestReconciler = &DatabaseQueryResourceReconciler{
 		Client: k8sManager.GetClient(),
 		Scheme: k8sManager.GetScheme(),
-	}).SetupWithManagerAndGVKs(k8sManager, registeredGVKs)
+	}
+	err = TestReconciler.SetupWithManagerAndGVKs(k8sManager, registeredGVKs)
 	Expect(err).ToNot(HaveOccurred())
 
 	go func() {
