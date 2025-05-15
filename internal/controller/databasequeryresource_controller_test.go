@@ -61,8 +61,14 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 						},
 					},
 					Query:    "SELECT 1 as id", // Simple query for test
-					Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: test-cm-{{ .Row.id }}\n  namespace: default\ndata:\n  foo: bar`,
-				},
+					Template: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-cm-{{ .Row.id }}
+  namespace: default
+data:
+  foo: bar`,
+},
 			}
 			Expect(k8sClient.Create(ctx, dbqr)).To(Succeed())
 
@@ -105,7 +111,13 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 						},
 					},
 					Query:    "SELECT 42 as id",
-					Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: test-cm-{{ .Row.id }}\n  namespace: default\ndata:\n  foo: bar`,
+					Template: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-cm-{{ .Row.id }}
+  namespace: default
+data:
+  foo: bar`,
 				},
 			}
 			Expect(k8sClient.Create(ctx, dbqr)).To(Succeed())
