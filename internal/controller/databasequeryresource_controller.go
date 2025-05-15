@@ -81,75 +81,6 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	r.Log = log
 	log.Info("Reconciling DatabaseQueryResource", "Request.Namespace", req.Namespace, "Request.Name", req.Name)
 
-	// Check if this is a child resource event and handle status updates
-	if v := ctx.Value(childResourceEventKey); v != nil {
-		// Child resource event: only run status update query and update parent status
-		info, ok := v.(childResourceInfo)
-		if !ok {
-			log.Error(nil, "childResourceEventKey context value is not childResourceInfo")
-			return ctrl.Result{}, nil
-		}
-		// Fetch parent DatabaseQueryResource
-		dbqr := &databasev1alpha1.DatabaseQueryResource{}
-		if err := r.Get(ctx, req.NamespacedName, dbqr); err != nil {
-			if apierrors.IsNotFound(err) {
-				log.Info("DatabaseQueryResource not found. Ignoring since object must be deleted.")
-				return ctrl.Result{}, nil
-			}
-			log.Error(err, "Failed to get DatabaseQueryResource")
-			return ctrl.Result{}, err
-		}
-		// Fetch the child resource
-		obj := &unstructured.Unstructured{}
-		obj.SetGroupVersionKind(info.GVK)
-		obj.SetNamespace(info.Namespace)
-		obj.SetName(info.Name)
-		if err := r.Get(ctx, types.NamespacedName{Namespace: info.Namespace, Name: info.Name}, obj); err != nil {
-			log.Error(err, "Failed to get child resource for status update", "GVK", info.GVK, "Namespace", info.Namespace, "Name", info.Name)
-			return ctrl.Result{}, nil
-		}
-		// Run status update query if defined
-		if dbqr.Spec.StatusUpdateQueryTemplate != "" {
-			dbConfig, err := r.getDBConfig(ctx, dbqr)
-			if err != nil {
-				log.Error(err, "Failed to get database configuration for status update")
-				return ctrl.Result{}, nil
-			}
-			dbClient, err := r.getOrCreateDBClient(ctx, dbqr, dbConfig)
-			if err != nil {
-				log.Error(err, "Failed to get database client for status update")
-				return ctrl.Result{}, nil
-			}
-			defer dbClient.Close(ctx)
-			tmpl, err := template.New("statusUpdateQuery").Funcs(sprig.TxtFuncMap()).Parse(dbqr.Spec.StatusUpdateQueryTemplate)
-			if err != nil {
-				log.Error(err, "Failed to parse status update query template (child event)")
-				return ctrl.Result{}, nil
-			}
-			var queryBuffer bytes.Buffer
-			err = tmpl.Execute(&queryBuffer, map[string]interface{}{
-				"Resource": obj.Object,
-			})
-			if err != nil {
-				log.Error(err, "Failed to render status update query (child event)")
-				return ctrl.Result{}, nil
-			}
-			err = dbClient.Exec(ctx, queryBuffer.String())
-			if err != nil {
-				log.Error(err, "Failed to execute status update query (child event)", "query", queryBuffer.String())
-			} else {
-				log.Info("Successfully updated status in database (child event)", "query", queryBuffer.String())
-			}
-		}
-		// Always update parent status to reflect child change
-		setCondition(dbqr, ConditionReconciled, metav1.ConditionTrue, "ChildResourceChanged", "Status updated due to child resource event")
-		dbqr.Status.ObservedGeneration = dbqr.Generation
-		if err := r.Status().Update(ctx, dbqr); err != nil {
-			log.Error(err, "Failed to update DatabaseQueryResource status (child event)")
-		}
-		return ctrl.Result{}, nil
-	}
-
 	// 1. Fetch the DatabaseQueryResource instance
 	dbqr := &databasev1alpha1.DatabaseQueryResource{}
 	if err := r.Get(ctx, req.NamespacedName, dbqr); err != nil {
@@ -286,11 +217,12 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		processedRows = append(processedRows, rowData)
 	}
 
-	// 7. Prune Old Resources (Garbage Collection)
+	// 7. Prune Old Resources (Garbage Collection) and collect all child resources
 	var pruneErrors []string
+	var allChildResources []*unstructured.Unstructured
 	if dbqr.Spec.GetPrune() {
 		log.Info("Pruning enabled, checking for stale resources")
-		pruneErrors = r.pruneStaleResources(ctx, dbqr, managedResourceKeys, r.OwnedGVKs)
+		pruneErrors, allChildResources = r.pruneStaleAndCollect(ctx, dbqr, managedResourceKeys, r.OwnedGVKs)
 		if len(pruneErrors) > 0 {
 			log.Info("Errors occurred during pruning", "error", strings.Join(pruneErrors, "; "))
 		} else {
@@ -298,9 +230,13 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		}
 	} else {
 		log.Info("Pruning disabled")
+		_, allChildResources = r.pruneStaleAndCollect(ctx, dbqr, managedResourceKeys, r.OwnedGVKs)
 	}
 
-	// 8. Update Status
+	// 8. Check for child resource state changes and update status if needed
+	r.updateStatusForChildResources(ctx, dbqr, allChildResources, dbConfig)
+
+	// 9. Update Status
 	finalErrors := append(rowProcessingErrors, pruneErrors...)
 	managedResourcesList := make([]string, 0, len(managedResourceKeys))
 	for k := range managedResourceKeys {
@@ -391,32 +327,21 @@ func (r *DatabaseQueryResourceReconciler) getDBConfig(ctx context.Context, dbqr 
 	return config, nil
 }
 
-// pruneStaleResources lists all resources managed by the CR and deletes those not found in the current desired state.
-func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, currentKeys map[string]bool, ownedGVKs []schema.GroupVersionKind) []string {
+// pruneStaleAndCollect lists all resources managed by the CR, deletes those not found in the current desired state, and returns all child resources.
+func (r *DatabaseQueryResourceReconciler) pruneStaleAndCollect(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, currentKeys map[string]bool, ownedGVKs []schema.GroupVersionKind) ([]string, []*unstructured.Unstructured) {
 	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
 	var errors []string
+	var allChildren []*unstructured.Unstructured
 
-	// We need to list resources across all GVKs. This is tricky and potentially inefficient.
-	// A better approach might be to store the GVKs of previously created resources in the status,
-	// but let's try a label-based approach first across common types.
-	// WARNING: This might miss resources if they are of unusual kinds.
-	// Consider adding configuration to the CRD to specify which GVKs to scan for pruning.
-
-	log.Info("Listing potentially managed resources for pruning")
-
-	// Label selector to find resources managed by this specific CR instance
 	selector := labels.SelectorFromSet(labels.Set{
 		ManagedByLabel: dbqr.Name,
 	})
 
 	for _, gvk := range ownedGVKs {
 		list := &unstructured.UnstructuredList{}
-		list.SetGroupVersionKind(gvk) // Set GVK for List operation
-
+		list.SetGroupVersionKind(gvk)
 		err := r.List(ctx, list, client.InNamespace(dbqr.Namespace), client.MatchingLabelsSelector{Selector: selector})
-
 		if err != nil {
-			// Ignore "no kind is registered" errors, just means we don't know about this GVK yet
 			if meta.IsNoMatchError(err) || runtime.IsNotRegisteredError(err) {
 				log.V(1).Info("Skipping GVK for pruning, not registered in scheme", "GVK", gvk)
 				continue
@@ -425,15 +350,15 @@ func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Contex
 			errors = append(errors, fmt.Sprintf("list %s: %v", gvk.Kind, err))
 			continue
 		}
-
 		log.Info("Found candidates for pruning", "GVK", gvk, "Count", len(list.Items))
-
-		for _, item := range list.Items {
-			objKey := getObjectKey(&item)
+		for i := range list.Items {
+			item := &list.Items[i]
+			allChildren = append(allChildren, item)
+			objKey := getObjectKey(item)
 			if _, exists := currentKeys[objKey]; !exists {
 				// This resource was managed by us previously but is not in the current DB result set. Delete it.
 				log.Info("Pruning stale resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
-				if err := r.Delete(ctx, &item); err != nil {
+				if err := r.Delete(ctx, item); err != nil {
 					// Ignore not found errors, might have been deleted already
 					if !apierrors.IsNotFound(err) {
 						log.Error(err, "Failed to prune resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
@@ -445,8 +370,46 @@ func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Contex
 			}
 		}
 	}
+	return errors, allChildren
+}
 
-	return errors
+// updateStatusForChildResources checks all child resources and updates the parent status if any child has changed state.
+func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, children []*unstructured.Unstructured, dbConfig map[string]string) {
+	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
+	if dbqr.Spec.StatusUpdateQueryTemplate == "" {
+		return
+	}
+	for _, obj := range children {
+		// Only process Deployments for this example, but could generalize
+		if obj.GetKind() == "Deployment" && obj.GroupVersionKind().Group == "apps" {
+			dbClient, err := r.getOrCreateDBClient(ctx, dbqr, dbConfig)
+			if err != nil {
+				log.Error(err, "Failed to get database client for status update")
+				continue
+			}
+			defer dbClient.Close(ctx)
+			tmpl, err := template.New("statusUpdateQuery").Funcs(sprig.TxtFuncMap()).Parse(dbqr.Spec.StatusUpdateQueryTemplate)
+			if err != nil {
+				log.Error(err, "Failed to parse status update query template (child event)")
+				continue
+			}
+			var queryBuffer bytes.Buffer
+			err = tmpl.Execute(&queryBuffer, map[string]interface{}{
+				"Resource": obj.Object,
+			})
+			if err != nil {
+				log.Error(err, "Failed to render status update query (child event)")
+				continue
+			}
+			err = dbClient.Exec(ctx, queryBuffer.String())
+			if err != nil {
+				log.Error(err, "Failed to execute status update query (child event)", "query", queryBuffer.String())
+			} else {
+				log.Info("Successfully updated status in database (child event)", "query", queryBuffer.String())
+				setCondition(dbqr, ConditionReconciled, metav1.ConditionTrue, "ChildResourceChanged", "Status updated due to child resource event")
+			}
+		}
+	}
 }
 
 // getObjectKey creates a unique string identifier for a Kubernetes object.
