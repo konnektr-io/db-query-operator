@@ -32,6 +32,9 @@ spec:
         # Add other flags like --metrics-bind-address=:8080 if needed
         command:
         - /manager
+        env:
+        - name: WATCHED_GVK_PATTERNS
+          value: "v1/ConfigMap"
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

@@ -4,13 +4,16 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -27,13 +30,49 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+
+	watchedGVKPatterns string
+	watchedGVKs        []schema.GroupVersionKind
 )
+
+func parseWatchedGVKs(pattern string) ([]schema.GroupVersionKind, error) {
+	var gvks []schema.GroupVersionKind
+	if pattern == "" {
+		return gvks, nil
+	}
+	for _, entry := range strings.Split(pattern, ";") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.Split(entry, "/")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid GVK pattern: %s", entry)
+		}
+		groupVersion := parts[0]
+		kind := parts[1]
+		gvParts := strings.SplitN(groupVersion, ".", 2)
+		group := ""
+		version := groupVersion
+		if len(gvParts) == 2 {
+			group = gvParts[0]
+			version = gvParts[1]
+		}
+		gvks = append(gvks, schema.GroupVersionKind{Group: group, Version: version, Kind: kind})
+	}
+	return gvks, nil
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(databasev1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
+
+	watchedGVKPatterns = os.Getenv("WATCHED_GVK_PATTERNS")
+	if watchedGVKPatterns == "" {
+		flag.StringVar(&watchedGVKPatterns, "watched-gvk-patterns", "", "Semicolon-separated list of GVKs to watch, e.g. 'v1/ConfigMap;argoproj.io/v1alpha1/Application'")
+	}
 }
 
 func main() {
@@ -79,6 +118,14 @@ func main() {
 		TLSOpts: tlsOpts,
 	})
 
+	// Parse watched GVKs from flag or env
+	var err error
+	watchedGVKs, err = parseWatchedGVKs(watchedGVKPatterns)
+	if err != nil {
+		setupLog.Error(err, "invalid watched-gvk-patterns")
+		os.Exit(1)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
@@ -90,17 +137,6 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "a7a7e7a4.example.com",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intending to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -110,8 +146,8 @@ func main() {
 	if err = (&controller.DatabaseQueryResourceReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-		Log:    ctrl.Log.WithName("controllers").WithName("DatabaseQueryResource"), // Pass logger
-	}).SetupWithManager(mgr); err != nil {
+		Log:    ctrl.Log.WithName("controllers").WithName("DatabaseQueryResource"),
+	}).SetupWithManagerAndGVKs(mgr, watchedGVKs); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DatabaseQueryResource")
 		os.Exit(1)
 	}

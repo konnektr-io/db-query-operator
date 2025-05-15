@@ -542,3 +542,17 @@ func (r *DatabaseQueryResourceReconciler) SetupWithManager(mgr ctrl.Manager) err
 		Owns(&unstructured.Unstructured{}).
 		Complete(r)
 }
+
+// SetupWithManagerAndGVKs sets up the controller with the Manager and watches the specified GVKs as owned resources.
+func (r *DatabaseQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manager, ownedGVKs []schema.GroupVersionKind) error {
+	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
+		For(&databasev1alpha1.DatabaseQueryResource{})
+
+	for _, gvk := range ownedGVKs {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+		controllerBuilder = controllerBuilder.Owns(u)
+	}
+
+	return controllerBuilder.Complete(r)
+}
