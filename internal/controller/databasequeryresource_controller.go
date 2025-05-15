@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -544,10 +545,28 @@ func (r *DatabaseQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manag
 	for _, gvk := range ownedGVKs {
 		u := &unstructured.Unstructured{}
 		u.SetGroupVersionKind(gvk)
-		controllerBuilder = controllerBuilder.Owns(u, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}))
+		controllerBuilder = controllerBuilder.Owns(u, builder.WithPredicates(
+			statusChangePredicate(),
+			predicate.ResourceVersionChangedPredicate{},
+			predicate.GenerationChangedPredicate{},
+			predicate.AnnotationChangedPredicate{},
+			predicate.LabelChangedPredicate{},
+		))
 	}
 
 	return controllerBuilder.Complete(r)
+}
+
+func statusChangePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			// Always trigger on update (including status changes)
+			return true
+		},
+		CreateFunc:  func(e event.CreateEvent) bool { return true },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return false },
+		GenericFunc: func(e event.GenericEvent) bool { return false },
+	}
 }
 
 // getOrCreateDBClient returns a connected DatabaseClient using the factory or default logic
