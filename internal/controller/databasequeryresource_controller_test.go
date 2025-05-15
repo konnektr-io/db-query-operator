@@ -98,7 +98,7 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 				Spec: databasev1alpha1.DatabaseQueryResourceSpec{
 					PollInterval: "10s",
 					Database: databasev1alpha1.DatabaseSpec{
-						Type: "mock",
+						Type: "postgres",
 						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
 							Name:      "irrelevant",
 							Namespace: ResourceNamespace,
