@@ -47,7 +47,8 @@ func parseWatchedGVKs(pattern string) ([]schema.GroupVersionKind, error) {
 		}
 		parts := strings.Split(entry, "/")
 		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid GVK pattern: %s", entry)
+			setupLog.Error(fmt.Errorf("invalid GVK pattern: %s", entry), "Skipping invalid GVK entry")
+			continue
 		}
 		groupVersion := parts[0]
 		kind := parts[1]
@@ -58,8 +59,17 @@ func parseWatchedGVKs(pattern string) ([]schema.GroupVersionKind, error) {
 			group = gvParts[0]
 			version = gvParts[1]
 		}
-		gvks = append(gvks, schema.GroupVersionKind{Group: group, Version: version, Kind: kind})
+		if version == "" || kind == "" {
+			setupLog.Error(fmt.Errorf("empty version or kind in GVK: %s", entry), "Skipping invalid GVK entry")
+			continue
+		}
+		gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: kind}
+		gvks = append(gvks, gvk)
 	}
+	if len(gvks) == 0 {
+		return nil, fmt.Errorf("no valid watched GVKs specified")
+	}
+	setupLog.Info("Watching GVKs", "gvks", gvks)
 	return gvks, nil
 }
 
@@ -68,11 +78,6 @@ func init() {
 
 	utilruntime.Must(databasev1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
-
-	gvkPattern = os.Getenv("GVK_PATTERN")
-	if gvkPattern == "" {
-		flag.StringVar(&gvkPattern, "gvk-pattern", "", "Semicolon-separated list of GVKs to watch, e.g. 'v1/Service;v1/ConfigMap;apps/v1/Deployment;networking.k8s.io/v1/Ingress'")
-	}
 }
 
 func main() {
@@ -81,6 +86,11 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+
+	// Set gvkPattern default from env, allow override by flag
+	gvkPattern = os.Getenv("GVK_PATTERN")
+	flag.StringVar(&gvkPattern, "gvk-pattern", gvkPattern, "Semicolon-separated list of GVKs to watch, e.g. 'v1/Service;v1/ConfigMap;apps/v1/Deployment;networking.k8s.io/v1/Ingress'")
+
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,

@@ -534,15 +534,6 @@ func (r *DatabaseQueryResourceReconciler) createOrUpdateResource(ctx context.Con
 	return nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
-// The controller will watch both the DatabaseQueryResource primary resource and the unstructured secondary resource.
-func (r *DatabaseQueryResourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&databasev1alpha1.DatabaseQueryResource{}).
-		Owns(&unstructured.Unstructured{}).
-		Complete(r)
-}
-
 // SetupWithManagerAndGVKs sets up the controller with the Manager and watches the specified GVKs as owned resources.
 func (r *DatabaseQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manager, ownedGVKs []schema.GroupVersionKind) error {
 	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
