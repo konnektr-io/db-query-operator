@@ -26,12 +26,6 @@ jobs:
             ${{ runner.os }}-go-
       - name: Install dependencies
         run: go mod download
-      - name: Set up KinD cluster
-        uses: helm/kind-action@v1.8.0
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: "latest"
       - name: Install envtest tools
         run: |
           go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
