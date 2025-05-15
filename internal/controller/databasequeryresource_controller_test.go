@@ -101,6 +101,18 @@ data:
 				// Assert ConfigMap data
 				g.Expect(createdCM.Data).To(HaveKeyWithValue("foo", "bar"))
 			}, timeout, interval).Should(Succeed())
+
+			// Remove all rows from the mock DB to simulate the resource disappearing from the database
+			mock.Rows = []util.RowResult{}
+
+			// Wait for more than the poll interval to allow the controller to reconcile and prune
+			time.Sleep(12 * time.Second)
+
+			// Assert that the ConfigMap is deleted
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, cmLookup, createdCM)
+				g.Expect(err).To(HaveOccurred())
+			}, timeout, interval).Should(Succeed())
 		})
 	})
 })
