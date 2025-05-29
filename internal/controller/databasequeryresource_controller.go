@@ -39,6 +39,7 @@ const (
 	ControllerName       = "databasequeryresource-controller"
 	ConditionReconciled  = "Reconciled"
 	ConditionDBConnected = "DBConnected"
+	DatabaseQueryFinalizer = "konnektr.io/databasequeryresource-finalizer"
 )
 
 // DatabaseQueryResourceReconciler reconciles a DatabaseQueryResource object
@@ -89,8 +90,54 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "Failed to get DatabaseQueryResource")
-		// Don't update status if we couldn't fetch the object
 		return ctrl.Result{}, err
+	}
+
+	// Handle finalizer logic
+	if !dbqr.ObjectMeta.DeletionTimestamp.IsZero() {
+		// Being deleted, handle cleanup if finalizer is present
+		finalizers := dbqr.GetFinalizers()
+		found := false
+		for _, f := range finalizers {
+			if f == DatabaseQueryFinalizer {
+				found = true
+				break
+			}
+		}
+		if found {
+			log.Info("DatabaseQueryResource is being deleted, cleaning up managed resources")
+			// Collect all managed child resources
+			allChildResources, err := r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
+			if err != nil {
+				log.Error(err, "Failed to collect child resources for deletion cleanup")
+				return ctrl.Result{}, err
+			}
+			// Delete all managed resources
+			for _, obj := range allChildResources {
+				log.Info("Deleting managed resource due to CR deletion", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+				if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+					log.Error(err, "Failed to delete managed resource during finalizer cleanup", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+					// Optionally, return error to retry cleanup
+					return ctrl.Result{}, err
+				}
+			}
+			// Remove finalizer
+			newFinalizers := []string{}
+			for _, f := range finalizers {
+				if f != DatabaseQueryFinalizer {
+					newFinalizers = append(newFinalizers, f)
+				}
+			}
+			dbqr.SetFinalizers(newFinalizers)
+			if err := r.Update(ctx, dbqr); err != nil {
+				log.Error(err, "Failed to remove finalizer after cleanup")
+				return ctrl.Result{}, err
+			}
+			log.Info("Finalizer removed, cleanup complete")
+			return ctrl.Result{}, nil
+		}
+		// If finalizer not present, nothing to do, allow deletion
+		return ctrl.Result{}, nil
 	}
 
 	// Initialize status conditions if they are nil
