@@ -49,6 +49,7 @@ helm install db-query-operator konnektr/db-query-operator \
 
 * By default, the image tag will match the Helm chart's `appVersion`.
 * You can override any value in `values.yaml` using `--set` or a custom `values.yaml`.
+* The `gvkPattern` parameter allows you to specify which Kubernetes resources the operator should manage.
 * The CRDs are not installed by default; install with the installCRDs parameter or manually as described below.
 
 #### Install the CRDs (required)
@@ -220,7 +221,7 @@ spec:
     connectionSecretRef:
       name: db-credentials
   query: |
-    SELECT resource_id, name, replicas, image, status FROM deployments WHERE status IN ('Pending', 'Updating');
+    SELECT resource_id, name, replicas, image, status FROM deployments;
   template: |
     apiVersion: apps/v1
     kind: Deployment
@@ -244,16 +245,15 @@ spec:
             image: {{ .Row.image }}
   statusUpdateQueryTemplate: |
     UPDATE deployments
-    SET status = '{{ .Status.State }}',
-        error_message = '{{ .Status.Message }}'
-    WHERE resource_id = '{{ .Row.resource_id }}';
+    SET status = '{{ .Resource.status.availableReplicas | default 0 }}'
+    WHERE resource_id = '{{ .Resource.metadata.labels.resource_id }}';
 ```
 
 In this example:
 
-* The `query` fetches rows from the `deployments` table where the `status` is either `Pending` or `Updating`.
+* The `query` fetches all rows from the `deployments` table.
 * The `template` generates a Kubernetes `Deployment` for each row.
-* The `statusUpdateQueryTemplate` updates the `status` and `error_message` fields in the database based on the reconciliation outcome.
+* The `statusUpdateQueryTemplate` updates the `status` field in the database based on the reconciliation outcome.
 
 ## CRD Specification (`DatabaseQueryResourceSpec`)
 
