@@ -431,7 +431,13 @@ spec:
 						},
 					},
 					Query:    "SELECT 99 as id",
-					Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: finalizer-cm-{{ .Row.id }}\n  namespace: default\ndata:\n  foo: bar`,
+					Template: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: finalizer-cm-{{ .Row.id }}
+  namespace: default
+data:
+  foo: bar`,
 				},
 			}
 			Expect(k8sClient.Create(ctx, dbqr)).To(Succeed())
