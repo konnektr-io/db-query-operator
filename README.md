@@ -303,6 +303,37 @@ In this example:
 
   * You can use standard Go template functions. Access row data via `.Row.column_name`. Access parent CR metadata via `.Metadata.Namespace`, etc.
 
+## Cascading Deletion and Finalizer Logic
+
+By default, deleting a `DatabaseQueryResource` will **not** delete the resources it manages (such as ConfigMaps, Deployments, etc).
+
+If you want the operator to delete all managed resources when the `DatabaseQueryResource` is deleted, you must explicitly add the following finalizer to the resource:
+
+```yaml
+metadata:
+  finalizers:
+    - konnektr.io/databasequeryresource-finalizer
+```
+
+When this finalizer is present, the operator will:
+
+1. On deletion (when you run `kubectl delete databasequeryresource ...`), the operator will first delete all managed resources (those labeled with `konnektr.io/managed-by: <name>`).
+2. Once all managed resources are deleted, the operator will remove the finalizer, allowing the `DatabaseQueryResource` to be deleted.
+
+**How to use:**
+- To enable cascading deletion, patch your resource before deleting:
+
+  ```bash
+  kubectl patch databasequeryresource <name> -n <namespace> --type='json' -p='[{"op": "add", "path": "/metadata/finalizers/-", "value": "konnektr.io/databasequeryresource-finalizer"}]'
+  ```
+- Then delete as usual:
+
+  ```bash
+  kubectl delete databasequeryresource <name> -n <namespace>
+  ```
+
+If the finalizer is not present, deleting the `DatabaseQueryResource` will **not** delete any managed resources.
+
 ## Development
 
 1. **Prerequisites:** Ensure Go, Docker, `kubectl`, `controller-gen`, and access to a Kubernetes cluster are set up.
