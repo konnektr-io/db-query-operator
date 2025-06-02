@@ -384,6 +384,83 @@ spec:
 			}, timeout*2, interval).Should(Succeed())
 		})
 	})
+
+	Describe("Finalizer cleanup logic", func() {
+		It("should delete managed resources and remove the finalizer when the CR is deleted and the finalizer is set", func() {
+			ctx := context.Background()
+			mock := &MockDatabaseClient{
+				Rows:    []util.RowResult{{"id": 99}},
+				Columns: []string{"id"},
+			}
+
+			TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
+				return mock, nil
+			}
+
+			dummySecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "finalizer-secret",
+					Namespace: ResourceNamespace,
+				},
+				Data: map[string][]byte{
+					"host":     []byte("localhost"),
+					"port":     []byte("5432"),
+					"username": []byte("testuser"),
+					"password": []byte("testpass"),
+					"dbname":   []byte("testdb"),
+					"sslmode":  []byte("disable"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, dummySecret)).To(Succeed())
+
+			// Create the DatabaseQueryResource with the finalizer set
+			dbqr := &databasev1alpha1.DatabaseQueryResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "finalizer-dbqr",
+					Namespace:  ResourceNamespace,
+					Finalizers: []string{"konnektr.io/databasequeryresource-finalizer"},
+				},
+				Spec: databasev1alpha1.DatabaseQueryResourceSpec{
+					PollInterval: "10s",
+					Prune:        ptrBool(true),
+					Database: databasev1alpha1.DatabaseSpec{
+						Type: "postgres",
+						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
+							Name:      "finalizer-secret",
+							Namespace: ResourceNamespace,
+						},
+					},
+					Query:    "SELECT 99 as id",
+					Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: finalizer-cm-{{ .Row.id }}\n  namespace: default\ndata:\n  foo: bar`,
+				},
+			}
+			Expect(k8sClient.Create(ctx, dbqr)).To(Succeed())
+
+			// Wait for the ConfigMap to be created
+			cmName := "finalizer-cm-99"
+			cmLookup := types.NamespacedName{Name: cmName, Namespace: ResourceNamespace}
+			createdCM := &corev1.ConfigMap{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
+			}, timeout, interval).Should(Succeed())
+
+			// Delete the DatabaseQueryResource
+			lookupKey := types.NamespacedName{Name: "finalizer-dbqr", Namespace: ResourceNamespace}
+			Expect(k8sClient.Delete(ctx, dbqr)).To(Succeed())
+
+			// The ConfigMap should be deleted by the finalizer logic
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, cmLookup, createdCM)
+				g.Expect(err).To(HaveOccurred())
+			}, timeout*2, interval).Should(Succeed())
+
+			// The DatabaseQueryResource should eventually be deleted (finalizer removed)
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, lookupKey, &databasev1alpha1.DatabaseQueryResource{})
+				g.Expect(err).To(HaveOccurred())
+			}, timeout*2, interval).Should(Succeed())
+		})
+	})
  
 })
 
