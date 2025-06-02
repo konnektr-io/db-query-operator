@@ -97,14 +97,14 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	if !dbqr.ObjectMeta.DeletionTimestamp.IsZero() {
 		// Being deleted, handle cleanup if finalizer is present
 		finalizers := dbqr.GetFinalizers()
-		found := false
+		hasFinalizer := false
 		for _, f := range finalizers {
 			if f == DatabaseQueryFinalizer {
-				found = true
+				hasFinalizer = true
 				break
 			}
 		}
-		if found {
+		if hasFinalizer {
 			log.Info("DatabaseQueryResource is being deleted, cleaning up managed resources")
 			// Collect all managed child resources
 			allChildResources, err := r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
@@ -122,13 +122,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 				}
 			}
 			// Remove finalizer
-			newFinalizers := []string{}
-			for _, f := range finalizers {
-				if f != DatabaseQueryFinalizer {
-					newFinalizers = append(newFinalizers, f)
-				}
-			}
-			dbqr.SetFinalizers(newFinalizers)
+			controllerutil.RemoveFinalizer(dbqr, DatabaseQueryFinalizer)
 			if err := r.Update(ctx, dbqr); err != nil {
 				log.Error(err, "Failed to remove finalizer after cleanup")
 				return ctrl.Result{}, err
