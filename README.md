@@ -283,7 +283,7 @@ In this example:
       }
   }
   ```
-
+* `statusUpdateQueryTemplate` (string, optional): A Go template string for an SQL query that updates the status of the resource in the database after reconciliation.
   * **Template Context:** The template receives a map with the following structure for the status update query:
 
   ```go
