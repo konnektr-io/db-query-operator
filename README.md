@@ -14,9 +14,10 @@ The operator handles the reconciliation loop, ensuring that the resources in the
 * **CRD Driven:** Configuration is managed via a `DatabaseQueryResource` Custom Resource Definition.
 * **Database Polling:** Periodically queries a database at a configurable interval.
 * **PostgreSQL Support:** Currently supports PostgreSQL databases.
-* **Custom Queries:** Execute any read-only SQL query.
+* **Custom Queries:** Execute any read-only SQL query to generate Kubernetes resources.
 * **Go Templating:** Define Kubernetes resource manifests using Go templates, allowing data from query results to be injected.
 * **Row-to-Resource Mapping:** Each row in the query result typically generates one Kubernetes resource.
+* **Status Updates:** Optionally update the database with the status of the created resources after reconciliation. 
 * **Secret Management:** Securely fetches database credentials from Kubernetes Secrets.
 * **Reconciliation:** Creates, updates, and (optionally) deletes Kubernetes resources to match the query results.
 * **Pruning:** Automatically cleans up resources previously created by the operator if they no longer correspond to a row in the database query result (configurable).
