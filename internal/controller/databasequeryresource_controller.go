@@ -418,34 +418,33 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 		return
 	}
 	for _, obj := range children {
-		// Only process Deployments for this example, but could generalize
-		if obj.GetKind() == "Deployment" && obj.GroupVersionKind().Group == "apps" {
-			dbClient, err := r.getOrCreateDBClient(ctx, dbqr, dbConfig)
-			if err != nil {
-				log.Error(err, "Failed to get database client for status update")
-				continue
-			}
-			defer dbClient.Close(ctx)
-			tmpl, err := template.New("statusUpdateQuery").Funcs(sprig.TxtFuncMap()).Parse(dbqr.Spec.StatusUpdateQueryTemplate)
-			if err != nil {
-				log.Error(err, "Failed to parse status update query template (child event)")
-				continue
-			}
-			var queryBuffer bytes.Buffer
-			err = tmpl.Execute(&queryBuffer, map[string]interface{}{
-				"Resource": obj.Object,
-			})
-			if err != nil {
-				log.Error(err, "Failed to render status update query (child event)")
-				continue
-			}
-			err = dbClient.Exec(ctx, queryBuffer.String())
-			if err != nil {
-				log.Error(err, "Failed to execute status update query (child event)", "query", queryBuffer.String())
-			} else {
-				log.Info("Successfully updated status in database (child event)", "query", queryBuffer.String())
-				setCondition(dbqr, ConditionReconciled, metav1.ConditionTrue, "ChildResourceChanged", "Status updated due to child resource event")
-			}
+		// Process all resource types, not just Deployments
+		dbClient, err := r.getOrCreateDBClient(ctx, dbqr, dbConfig)
+		if err != nil {
+			log.Error(err, "Failed to get database client for status update", "GVK", obj.GroupVersionKind(), "Name", obj.GetName())
+			continue
+		}
+		defer dbClient.Close(ctx)
+		tmpl, err := template.New("statusUpdateQuery").Funcs(sprig.TxtFuncMap()).Parse(dbqr.Spec.StatusUpdateQueryTemplate)
+		if err != nil {
+			log.Error(err, "Failed to parse status update query template (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName())
+			continue
+		}
+		var queryBuffer bytes.Buffer
+		// Provide the entire resource object as context, including metadata, spec, and status
+		err = tmpl.Execute(&queryBuffer, map[string]interface{}{
+			"Resource": obj.Object,
+		})
+		if err != nil {
+			log.Error(err, "Failed to render status update query (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName())
+			continue
+		}
+		err = dbClient.Exec(ctx, queryBuffer.String())
+		if err != nil {
+			log.Error(err, "Failed to execute status update query (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName(), "query", queryBuffer.String())
+		} else {
+			log.Info("Successfully updated status in database (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName(), "query", queryBuffer.String())
+			setCondition(dbqr, ConditionReconciled, metav1.ConditionTrue, "ChildResourceChanged", "Status updated due to child resource event")
 		}
 	}
 }
