@@ -292,7 +292,8 @@ data:
 			Expect(k8sClient.Create(ctx, dummySecret)).To(Succeed())
 
 			// Create the DatabaseQueryResource with a Deployment template and status update query
-			statusUpdateQuery := `UPDATE deployments SET status = '{{ .Resource.status.availableReplicas | default 0 }}' WHERE name = '{{ .Resource.metadata.name }}';`
+			// Test that we can access both the status and the kind from the resource context
+			statusUpdateQuery := `UPDATE deployments SET status = '{{ .Resource.status.availableReplicas | default 0 }}', kind = '{{ .Resource.kind }}' WHERE name = '{{ .Resource.metadata.name }}';`
 			dbqr := &databasev1alpha1.DatabaseQueryResource{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "deploy-dbqr",
@@ -371,16 +372,23 @@ spec:
 			}, timeout*2, interval).Should(Succeed())
 
 			// Check that the mock DB Exec was called with the expected status update query
+			// Verify both the status update and that the kind is correctly extracted
 			Eventually(func(g Gomega) {
 				mock.mu.RLock()
 				defer mock.mu.RUnlock()
 				found := false
+				kindFound := false
 				for _, q := range mock.ExecCalls {
 					if strings.Contains(q, "UPDATE deployments SET status") && strings.Contains(q, "my-deploy") {
 						found = true
+						// Verify that the kind 'Deployment' is included in the query
+						if strings.Contains(q, "kind = 'Deployment'") {
+							kindFound = true
+						}
 					}
 				}
-				g.Expect(found).To(BeTrue())
+				g.Expect(found).To(BeTrue(), "Status update query should be executed")
+				g.Expect(kindFound).To(BeTrue(), "Status update query should include kind = 'Deployment'")
 			}, timeout*2, interval).Should(Succeed())
 		})
 	})
