@@ -82,7 +82,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	r.Log = log
 	log.Info("Reconciling DatabaseQueryResource", "Request.Namespace", req.Namespace, "Request.Name", req.Name)
 
-	// 1. Fetch the DatabaseQueryResource instance
+	// Fetch the DatabaseQueryResource instance
 	dbqr := &databasev1alpha1.DatabaseQueryResource{}
 	if err := r.Get(ctx, req.NamespacedName, dbqr); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -147,7 +147,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		}
 	}()
 
-	// 2. Parse Poll Interval
+	// Parse Poll Interval
 	pollInterval, err := time.ParseDuration(dbqr.Spec.PollInterval)
 	if err != nil {
 		log.Error(err, "Invalid pollInterval format")
@@ -155,7 +155,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, nil // Don't requeue invalid spec
 	}
 
-	// 3. Get Database Connection Details
+	// Get Database Connection Details
 	dbConfig, err := r.getDBConfig(ctx, dbqr)
 	if err != nil {
 		log.Error(err, "Failed to get database configuration")
@@ -165,7 +165,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
 
-	// 4. Select and connect to the appropriate database client
+	// Select and connect to the appropriate database client
 	dbClient, err := r.getOrCreateDBClient(ctx, dbqr, dbConfig)
 	if err != nil {
 		log.Error(err, "Failed to get database client")
@@ -177,7 +177,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	log.Info("Successfully connected to database", "host", dbConfig["host"], "db", dbConfig["dbname"])
 	setCondition(dbqr, ConditionDBConnected, metav1.ConditionTrue, "Connected", "Successfully connected to the database")
 
-	// 5. Execute Query
+	// Execute Query
 	results, columnNames, err := dbClient.Query(ctx, dbqr.Spec.Query)
 	if err != nil {
 		log.Error(err, "Failed to execute database query", "query", dbqr.Spec.Query)
@@ -186,7 +186,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	}
 	log.Info("Query executed successfully", "columns", columnNames)
 
-	// 6. Process Rows and Manage Resources
+	// Process Rows and Manage Resources
 	managedResourceKeys := make(map[string]bool) // Store keys (namespace/name) of resources created/updated in this cycle
 	var rowProcessingErrors []string
 
@@ -250,7 +250,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		processedRows = append(processedRows, rowData)
 	}
 
-	// 7. Collect all child resources, then prune if enabled
+	// Collect all child resources, then prune if enabled
 	var pruneErrors []string
 	allChildResources, err := r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
 	if err != nil {
@@ -268,10 +268,10 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		log.Info("Pruning disabled")
 	}
 
-	// 8. Check for child resource state changes and update status if needed
+	// Check for child resource state changes and update status if needed
 	r.updateStatusForChildResources(ctx, dbqr, allChildResources, dbConfig)
 
-	// 9. Update Status
+	// Update Status
 	finalErrors := append(rowProcessingErrors, pruneErrors...)
 	managedResourcesList := make([]string, 0, len(managedResourceKeys))
 	for k := range managedResourceKeys {
