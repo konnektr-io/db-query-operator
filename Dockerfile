@@ -32,8 +32,8 @@ WORKDIR /
 # Copy the compiled binary from the builder stage
 COPY --from=builder /workspace/manager .
 
-# Use a non-root user (nobody:65534 is available in Alpine)
-USER nobody
+# Use a non-root user (nobody:65534)
+USER 65534:65534
 
 # The binary is the entrypoint
 ENTRYPOINT ["/manager"]
