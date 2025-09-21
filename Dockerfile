@@ -24,18 +24,16 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags="-w -s" -o manage
 
 # Runtime Stage
 # Use a distroless image for a minimal attack surface
-FROM gcr.io/distroless/static-debian11:nonroot AS runtime
-# For debugging, you might temporarily use a different base like alpine:
-# FROM alpine:latest
-# RUN apk add --no-cache ca-certificates
+FROM alpine:latest AS runtime
+
+RUN apk add --no-cache ca-certificates
 
 WORKDIR /
 # Copy the compiled binary from the builder stage
 COPY --from=builder /workspace/manager .
-# Copy CA certificates if needed (distroless/static usually includes them)
-# COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
-USER nonroot:nonroot
+# Use a non-root user (nobody:65534 is available in Alpine)
+USER nobody
 
 # The binary is the entrypoint
 ENTRYPOINT ["/manager"]
