@@ -262,7 +262,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		if len(pruneErrors) > 0 {
 			log.Info("Errors occurred during pruning", "error", strings.Join(pruneErrors, "; "))
 		} else {
-			log.Info("Pruning completed", "staleResourceCount", len(allChildResources)-len(managedResourceKeys))
+			log.Info("Pruning completed")
 		}
 	} else {
 		log.Info("Pruning disabled")

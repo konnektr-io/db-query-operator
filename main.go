@@ -4,9 +4,8 @@ package main
 import (
 	"crypto/tls"
 	"flag"
-	"fmt"
 	"os"
-	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -36,43 +35,6 @@ var (
 	registeredGVKs        []schema.GroupVersionKind
 )
 
-func parseWatchedGVKs(pattern string) ([]schema.GroupVersionKind, error) {
-	var gvks []schema.GroupVersionKind
-	if pattern == "" {
-		return gvks, nil
-	}
-	for _, entry := range strings.Split(pattern, ";") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		parts := strings.Split(entry, "/")
-		if len(parts) != 2 {
-			setupLog.Error(fmt.Errorf("invalid GVK pattern: %s", entry), "Skipping invalid GVK entry")
-			continue
-		}
-		groupVersion := parts[0]
-		kind := parts[1]
-		gvParts := strings.SplitN(groupVersion, ".", 2)
-		group := ""
-		version := groupVersion
-		if len(gvParts) == 2 {
-			group = gvParts[0]
-			version = gvParts[1]
-		}
-		if version == "" || kind == "" {
-			setupLog.Error(fmt.Errorf("empty version or kind in GVK: %s", entry), "Skipping invalid GVK entry")
-			continue
-		}
-		gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: kind}
-		gvks = append(gvks, gvk)
-	}
-	if len(gvks) == 0 {
-		return nil, fmt.Errorf("no valid watched GVKs specified")
-	}
-	return gvks, nil
-}
-
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
@@ -86,6 +48,9 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var leaderElectionLeaseDuration time.Duration
+	var leaderElectionRenewDeadline time.Duration
+	var leaderElectionRetryPeriod time.Duration
 
 	// Set gvkPattern default from env, allow override by flag
 	gvkPattern = os.Getenv("GVK_PATTERN")
@@ -100,6 +65,12 @@ func main() {
 		"If set the metrics endpoint is served securely")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.DurationVar(&leaderElectionLeaseDuration, "leader-election-lease-duration", 30*time.Second,
+		"Duration that non-leader candidates will wait to force acquire leadership (15s by default)")
+	flag.DurationVar(&leaderElectionRenewDeadline, "leader-election-renew-deadline", 20*time.Second,
+		"Duration that the acting controlplane will retry refreshing leadership before giving up (10s by default)")
+	flag.DurationVar(&leaderElectionRetryPeriod, "leader-election-retry-period", 5*time.Second,
+		"Duration the LeaderElector clients should wait between tries of actions (2s by default)")
 	opts := zap.Options{
 		Development: true, // Use true for more verbose logs during development
 	}
@@ -148,6 +119,9 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "dbqueryoperator.konnektr.io",
+		LeaseDuration:          &leaderElectionLeaseDuration,
+		RenewDeadline:          &leaderElectionRenewDeadline,
+		RetryPeriod:            &leaderElectionRetryPeriod,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
