@@ -184,7 +184,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "QueryFailed", fmt.Sprintf("Failed to execute query: %v", err))
 		return ctrl.Result{RequeueAfter: pollInterval}, nil // Requeue after interval
 	}
-	log.Info("Query executed successfully", "columns", columnNames)
+	log.Info("Query executed successfully", "columns", columnNames, "numRows", len(results))
 
 	// Process Rows and Manage Resources
 	managedResourceKeys := make(map[string]bool) // Store keys (namespace/name) of resources created/updated in this cycle
@@ -262,7 +262,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		if len(pruneErrors) > 0 {
 			log.Info("Errors occurred during pruning", "error", strings.Join(pruneErrors, "; "))
 		} else {
-			log.Info("Pruning completed")
+			log.Info("Pruning completed", "staleResourceCount", len(allChildResources)-len(managedResourceKeys))
 		}
 	} else {
 		log.Info("Pruning disabled")
