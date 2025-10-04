@@ -35,10 +35,10 @@ import (
 )
 
 const (
-	ManagedByLabel       = "konnektr.io/managed-by" // Label to identify managed resources
-	ControllerName       = "databasequeryresource-controller"
-	ConditionReconciled  = "Reconciled"
-	ConditionDBConnected = "DBConnected"
+	ManagedByLabel         = "konnektr.io/managed-by" // Label to identify managed resources
+	ControllerName         = "databasequeryresource-controller"
+	ConditionReconciled    = "Reconciled"
+	ConditionDBConnected   = "DBConnected"
 	DatabaseQueryFinalizer = "konnektr.io/databasequeryresource-finalizer"
 )
 
@@ -139,11 +139,41 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		dbqr.Status.Conditions = []metav1.Condition{}
 	}
 
-	// Defer status update
+	// Defer status update with retry-on-conflict, only if status has changed
 	defer func() {
-		dbqr.Status.ObservedGeneration = dbqr.Generation
-		if err := r.Status().Update(ctx, dbqr); err != nil {
+		// Fetch the latest version to compare status
+		latest := &databasev1alpha1.DatabaseQueryResource{}
+		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
+			log.Error(err, "Failed to fetch latest DatabaseQueryResource for status comparison")
+			return
+		}
+		// Compare status (deep equality)
+		desiredStatus := dbqr.Status
+		currentStatus := latest.Status
+		// Set ObservedGeneration for comparison
+		desiredStatus.ObservedGeneration = dbqr.Generation
+		if reflect.DeepEqual(currentStatus, desiredStatus) {
+			// No change, skip update
+			return
+		}
+		// Only update if status has changed
+		maxRetries := 3
+		for range maxRetries {
+			latest.Status = desiredStatus
+			err := r.Status().Update(ctx, latest)
+			if err == nil {
+				break
+			}
+			if apierrors.IsConflict(err) {
+				// Refetch and retry
+				if getErr := r.Get(ctx, req.NamespacedName, latest); getErr != nil {
+					log.Error(getErr, "Failed to refetch DatabaseQueryResource after conflict during status update")
+					break
+				}
+				continue
+			}
 			log.Error(err, "Failed to update DatabaseQueryResource status")
+			break
 		}
 	}()
 
@@ -221,8 +251,18 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 
 		// --- Resource Management ---
 
-		// Set Namespace if not specified in template, default to CR's namespace
-		if obj.GetNamespace() == "" {
+		// Determine if the resource is namespaced
+		restMapper := r.Client.RESTMapper()
+		mapping, err := restMapper.RESTMapping(obj.GroupVersionKind().GroupKind(), obj.GroupVersionKind().Version)
+		if err != nil {
+			log.Error(err, "Failed to get RESTMapping for object", "GVK", obj.GroupVersionKind())
+			rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("RESTMapping error for %s: %v", obj.GroupVersionKind().String(), err))
+			continue // Skip this resource
+		}
+		isNamespaced := mapping.Scope.Name() == "namespace"
+
+		// Set Namespace if not specified in template, default to CR's namespace (only for namespaced resources)
+		if isNamespaced && obj.GetNamespace() == "" {
 			obj.SetNamespace(dbqr.Namespace)
 		}
 		labels := obj.GetLabels()
@@ -231,11 +271,22 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		}
 		labels[ManagedByLabel] = dbqr.Name
 		obj.SetLabels(labels)
-		if err := controllerutil.SetControllerReference(dbqr, obj, r.Scheme); err != nil {
-			log.Error(err, "Failed to set owner reference on object", "object GVK", obj.GroupVersionKind(), "object Name", obj.GetName())
-			rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("owner ref error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
-			continue // Skip this resource
+
+		// Only set owner reference if resource is namespaced and in the same namespace as the parent
+		if isNamespaced && obj.GetNamespace() == dbqr.Namespace {
+			if err := controllerutil.SetControllerReference(dbqr, obj, r.Scheme); err != nil {
+				log.Error(err, "Failed to set owner reference on object", "object GVK", obj.GroupVersionKind(), "object Name", obj.GetName())
+				rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("owner ref error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
+				continue // Skip this resource
+			}
+		} else if isNamespaced {
+			// Namespaced but not in same namespace, skip owner ref
+			log.Info("Skipping owner reference: resource not in same namespace as parent", "object GVK", obj.GroupVersionKind(), "object Name", obj.GetName(), "object Namespace", obj.GetNamespace(), "parent Namespace", dbqr.Namespace)
+		} else {
+			// Cluster-scoped resource, skip owner ref
+			log.Info("Skipping owner reference: resource is cluster-scoped", "object GVK", obj.GroupVersionKind(), "object Name", obj.GetName())
 		}
+
 		log.Info("Applying resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 		patchMethod := client.Apply
 		err = r.Patch(ctx, obj, patchMethod, client.FieldOwner(ControllerName), client.ForceOwnership)

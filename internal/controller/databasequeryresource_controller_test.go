@@ -213,6 +213,94 @@ data:
 				g.Expect(err).To(HaveOccurred())
 			}, timeout, interval).Should(Succeed())
 		})
+		
+		It("should create a resource with without namespace if cluster scoped", func() {
+			ctx := context.Background()
+			mock := &MockDatabaseClient{
+				Rows:    []util.RowResult{{"id": 7}},
+				Columns: []string{"id"},
+			}
+			
+			// Patch the running reconciler's DBClientFactory for this test
+			TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
+				return mock, nil
+			}
+
+			// Create a dummy Secret required by the controller
+			dummySecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      SecretName,
+					Namespace: ResourceNamespace,
+				},
+				Data: map[string][]byte{
+					"host":     []byte("localhost"),
+					"port":     []byte("5432"),
+					"username": []byte("testuser"),
+					"password": []byte("testpass"),
+					"dbname":   []byte("testdb"),
+					"sslmode":  []byte("disable"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, dummySecret)).To(Succeed())
+
+			// Create the DatabaseQueryResource
+			dbqr := &databasev1alpha1.DatabaseQueryResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "mock-dbqr-nss",
+					Namespace: ResourceNamespace,
+				},
+				Spec: databasev1alpha1.DatabaseQueryResourceSpec{
+					PollInterval: "10s",
+					Prune:        ptrBool(true),
+					Database: databasev1alpha1.DatabaseSpec{
+						Type: "postgres",
+						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
+							Name:      SecretName,
+							Namespace: ResourceNamespace,
+						},
+					},
+					Query:    "SELECT 42 as id",
+					Template: `apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-ns-{{ .Row.id }}`,
+				},
+			}
+			Expect(k8sClient.Create(ctx, dbqr)).To(Succeed())
+
+			// Check the DatabaseQueryResource is created and reconciled
+			lookupKey := types.NamespacedName{Name: "mock-dbqr-nss", Namespace: ResourceNamespace}
+			created := &databasev1alpha1.DatabaseQueryResource{}
+			By("Checking the DatabaseQueryResource is created and reconciled")
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+				g.Expect(created.Status.Conditions).NotTo(BeEmpty())
+			}, timeout, interval).Should(Succeed())
+
+			// Check the Namespace is created with correct labels and data
+			nsName := "test-ns-42"
+			nsLookup := types.NamespacedName{Name: nsName}
+			createdNS := &corev1.Namespace{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, nsLookup, createdNS)).To(Succeed())
+				labels := createdNS.GetLabels()
+				g.Expect(labels).To(HaveKeyWithValue(ManagedByLabel, "mock-dbqr-nss"))
+			}, timeout, interval).Should(Succeed())
+
+			// Remove all rows from the mock DB to simulate the resource disappearing from the database
+			mock.mu.Lock()
+			mock.Rows = []util.RowResult{}
+			mock.mu.Unlock()
+
+			// Wait for more than the poll interval to allow the controller to reconcile and prune
+			time.Sleep(12 * time.Second)
+
+			// Assert that the Namespace is deleted
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, nsLookup, createdNS)
+				g.Expect(err).To(HaveOccurred())
+			}, timeout, interval).Should(Succeed())
+		})
 	})
 
 	Describe("with multiple rows and advanced templating", func() {
