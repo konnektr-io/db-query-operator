@@ -217,7 +217,7 @@ data:
 		It("should create a resource with without namespace if cluster scoped", func() {
 			ctx := context.Background()
 			mock := &MockDatabaseClient{
-				Rows:    []util.RowResult{{"id": 7}},
+				Rows:    []util.RowResult{{"id": 42}},
 				Columns: []string{"id"},
 			}
 

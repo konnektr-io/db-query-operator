@@ -140,14 +140,28 @@ func setLastAppliedConfig(obj *unstructured.Unstructured) error {
 	return nil
 }
 
-// needsUpdate determines if the resource needs to be updated by comparing current desired state with last applied
-func needsUpdate(obj *unstructured.Unstructured) (bool, error) {
-	lastApplied, err := getLastAppliedConfig(obj)
+// shouldUpdateResource determines if the resource needs to be updated by comparing with existing cluster state
+func (r *DatabaseQueryResourceReconciler) shouldUpdateResource(ctx context.Context, obj *unstructured.Unstructured) (bool, error) {
+	// Check if the resource exists in the cluster
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(obj.GroupVersionKind())
+	
+	err := r.Get(ctx, client.ObjectKeyFromObject(obj), existing)
 	if err != nil {
-		return false, fmt.Errorf("failed to get last applied config: %w", err)
+		if apierrors.IsNotFound(err) {
+			// Resource doesn't exist, we need to create it
+			return true, nil
+		}
+		return false, fmt.Errorf("failed to get existing resource: %w", err)
 	}
 	
-	// If no last applied config exists, we need to update (first time)
+	// Resource exists, check if our desired state differs from what was last applied
+	lastApplied, err := getLastAppliedConfig(existing)
+	if err != nil {
+		return false, fmt.Errorf("failed to get last applied config from existing resource: %w", err)
+	}
+	
+	// If no last applied config exists, we need to update (first time managing this resource)
 	if lastApplied == nil {
 		return true, nil
 	}
@@ -386,8 +400,8 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 			log.Info("Skipping owner reference: resource is cluster-scoped", "object GVK", obj.GroupVersionKind(), "object Name", obj.GetName())
 		}
 
-		// Check if update is needed by comparing with last applied configuration
-		updateNeeded, err := needsUpdate(obj)
+		// Check if update is needed by comparing with existing resource
+		updateNeeded, err := r.shouldUpdateResource(ctx, obj)
 		if err != nil {
 			log.Error(err, "Failed to check if update is needed", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 			rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("update check error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
