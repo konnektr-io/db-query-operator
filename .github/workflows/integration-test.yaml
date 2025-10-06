@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       ginkgo_focus:
-        description: 'Ginkgo focus pattern (optional - runs specific tests matching the pattern)'
+        description: 'Ginkgo focus pattern (optional)'
         required: false
         default: ''
         type: string

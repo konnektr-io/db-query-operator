@@ -214,7 +214,7 @@ data:
 			}, timeout, interval).Should(Succeed())
 		})
 
-		It("should create a resource with without namespace if cluster scoped", func() {
+		It("should create a resource without namespace if cluster scoped", func() {
 			ctx := context.Background()
 			mock := &MockDatabaseClient{
 				Rows:    []util.RowResult{{"id": 42}},

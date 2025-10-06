@@ -580,7 +580,25 @@ func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.C
 	for _, gvk := range ownedGVKs {
 		list := &unstructured.UnstructuredList{}
 		list.SetGroupVersionKind(gvk)
-		err := r.List(ctx, list, client.InNamespace(dbqr.Namespace), client.MatchingLabelsSelector{Selector: selector})
+		
+		// Check if this resource type is cluster-scoped
+		mapping, err := r.RESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version)
+		if err != nil {
+			log.Error(err, "Failed to get REST mapping for collection", "GVK", gvk)
+			continue
+		}
+		
+		// Use appropriate list options based on scope
+		var listOptions []client.ListOption
+		listOptions = append(listOptions, client.MatchingLabelsSelector{Selector: selector})
+		
+		if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+			// Namespaced resource - limit to DBQR namespace
+			listOptions = append(listOptions, client.InNamespace(dbqr.Namespace))
+		}
+		// For cluster-scoped resources, don't add namespace limitation
+		
+		err = r.List(ctx, list, listOptions...)
 		if err != nil {
 			if meta.IsNoMatchError(err) || runtime.IsNotRegisteredError(err) {
 				log.V(1).Info("Skipping GVK for collection, not registered in scheme", "GVK", gvk)
