@@ -2,6 +2,12 @@ name: Integration Tests
 
 on:
   workflow_dispatch:
+    inputs:
+      ginkgo_focus:
+        description: 'Ginkgo focus pattern (optional - runs specific tests matching the pattern)'
+        required: false
+        default: ''
+        type: string
   pull_request:
     branches:
       - main
@@ -31,4 +37,10 @@ jobs:
         env:
           KUBEBUILDER_ASSETS: ${{ env.KUBEBUILDER_ASSETS }}
         run: |
-          go test -v -race -covermode=atomic -coverprofile=coverage.out ./internal/controller/...
+          if [ -n "${{ github.event.inputs.ginkgo_focus }}" ]; then
+            echo "Running focused tests: ${{ github.event.inputs.ginkgo_focus }}"
+            go test -v -race -covermode=atomic -coverprofile=coverage.out ./internal/controller/... -ginkgo.focus="${{ github.event.inputs.ginkgo_focus }}"
+          else
+            echo "Running all tests"
+            go test -v -race -covermode=atomic -coverprofile=coverage.out ./internal/controller/...
+          fi
