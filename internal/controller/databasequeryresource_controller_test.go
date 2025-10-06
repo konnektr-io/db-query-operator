@@ -137,7 +137,7 @@ data:
 			// Create a dummy Secret required by the controller
 			dummySecret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      SecretName,
+					Name:      "test-db-secret-ns",
 					Namespace: ResourceNamespace,
 				},
 				Data: map[string][]byte{
@@ -163,7 +163,7 @@ data:
 					Database: databasev1alpha1.DatabaseSpec{
 						Type: "postgres",
 						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
-							Name:      SecretName,
+							Name:      "test-db-secret-ns",
 							Namespace: ResourceNamespace,
 						},
 					},
@@ -229,7 +229,7 @@ data:
 			// Create a dummy Secret required by the controller
 			dummySecret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      SecretName,
+					Name:      "test-db-secret-nss",
 					Namespace: ResourceNamespace,
 				},
 				Data: map[string][]byte{
@@ -255,7 +255,7 @@ data:
 					Database: databasev1alpha1.DatabaseSpec{
 						Type: "postgres",
 						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
-							Name:      SecretName,
+							Name:      "test-db-secret-nss",
 							Namespace: ResourceNamespace,
 						},
 					},
