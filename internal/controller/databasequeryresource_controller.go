@@ -82,6 +82,7 @@ type childResourceInfo struct {
 // managedResourceConfig represents the configuration we track for determining if updates are needed
 type managedResourceConfig struct {
 	Spec        interface{}            `json:"spec,omitempty"`
+	Data        interface{}            `json:"data,omitempty"`        // Include data field for ConfigMaps and similar resources
 	Labels      map[string]string      `json:"labels,omitempty"`
 	Annotations map[string]string      `json:"annotations,omitempty"`
 }
@@ -169,6 +170,7 @@ func (r *DatabaseQueryResourceReconciler) shouldUpdateResource(ctx context.Conte
 	// Compare current desired state with last applied
 	currentConfig := managedResourceConfig{
 		Spec:        obj.Object["spec"],
+		Data:        obj.Object["data"],        // Include data field for proper change detection
 		Labels:      obj.GetLabels(),
 		Annotations: obj.GetAnnotations(),
 	}
