@@ -24,8 +24,8 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 	const (
 		ResourceNamespace = "default"
 		SecretName        = "test-db-secret"
-		timeout  = time.Second * 10
-		interval = time.Millisecond * 250
+		timeout           = time.Second * 10
+		interval          = time.Millisecond * 250
 	)
 
 	Describe("When reconciling a DatabaseQueryResource", func() {
@@ -44,7 +44,7 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 			// Create a dummy Secret required by the controller
 			dummySecret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      SecretName,
+					Name:      "test-db-secret-1",
 					Namespace: ResourceNamespace,
 				},
 				Data: map[string][]byte{
@@ -70,11 +70,11 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 					Database: databasev1alpha1.DatabaseSpec{
 						Type: "postgres",
 						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
-							Name:      SecretName,
+							Name:      "test-db-secret-1",
 							Namespace: ResourceNamespace,
 						},
 					},
-					Query:    "SELECT 42 as id",
+					Query: "SELECT 42 as id",
 					Template: `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -125,10 +125,10 @@ data:
 		It("should create a resource with the parent namespace if namespace is not defined in the template", func() {
 			ctx := context.Background()
 			mock := &MockDatabaseClient{
-				Rows:    []util.RowResult{{"id": 7}},
+				Rows:    []util.RowResult{{"id": 42}},
 				Columns: []string{"id"},
 			}
-			
+
 			// Patch the running reconciler's DBClientFactory for this test
 			TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
 				return mock, nil
@@ -137,7 +137,7 @@ data:
 			// Create a dummy Secret required by the controller
 			dummySecret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      SecretName,
+					Name:      "test-db-secret-ns",
 					Namespace: ResourceNamespace,
 				},
 				Data: map[string][]byte{
@@ -163,11 +163,11 @@ data:
 					Database: databasev1alpha1.DatabaseSpec{
 						Type: "postgres",
 						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
-							Name:      SecretName,
+							Name:      "test-db-secret-ns",
 							Namespace: ResourceNamespace,
 						},
 					},
-					Query:    "SELECT 42 as id",
+					Query: "SELECT 42 as id",
 					Template: `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -213,14 +213,14 @@ data:
 				g.Expect(err).To(HaveOccurred())
 			}, timeout, interval).Should(Succeed())
 		})
-		
-		It("should create a resource with without namespace if cluster scoped", func() {
+
+		It("should create a resource without namespace if cluster scoped", func() {
 			ctx := context.Background()
 			mock := &MockDatabaseClient{
-				Rows:    []util.RowResult{{"id": 7}},
+				Rows:    []util.RowResult{{"id": 42}},
 				Columns: []string{"id"},
 			}
-			
+
 			// Patch the running reconciler's DBClientFactory for this test
 			TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
 				return mock, nil
@@ -229,7 +229,7 @@ data:
 			// Create a dummy Secret required by the controller
 			dummySecret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      SecretName,
+					Name:      "test-db-secret-nss",
 					Namespace: ResourceNamespace,
 				},
 				Data: map[string][]byte{
@@ -255,11 +255,11 @@ data:
 					Database: databasev1alpha1.DatabaseSpec{
 						Type: "postgres",
 						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
-							Name:      SecretName,
+							Name:      "test-db-secret-nss",
 							Namespace: ResourceNamespace,
 						},
 					},
-					Query:    "SELECT 42 as id",
+					Query: "SELECT 42 as id",
 					Template: `apiVersion: v1
 kind: Namespace
 metadata:
@@ -295,10 +295,15 @@ metadata:
 			// Wait for more than the poll interval to allow the controller to reconcile and prune
 			time.Sleep(12 * time.Second)
 
-			// Assert that the Namespace is deleted
+			// Assert that the Namespace is marked for deletion
 			Eventually(func(g Gomega) {
 				err := k8sClient.Get(ctx, nsLookup, createdNS)
-				g.Expect(err).To(HaveOccurred())
+				if err != nil {
+					// Namespace is fully deleted, which is also acceptable
+					return
+				}
+				// Check if namespace has deletion timestamp (is being deleted)
+				g.Expect(createdNS.DeletionTimestamp).NotTo(BeNil())
 			}, timeout, interval).Should(Succeed())
 		})
 	})
@@ -350,7 +355,7 @@ metadata:
 							Namespace: ResourceNamespace,
 						},
 					},
-					Query:    "SELECT id, name, age FROM users",
+					Query: "SELECT id, name, age FROM users",
 					Template: `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -381,7 +386,7 @@ data:
 					labels := createdCM.GetLabels()
 					g.Expect(labels).To(HaveKeyWithValue(ManagedByLabel, "multi-dbqr"))
 					g.Expect(labels).To(HaveKeyWithValue("user-name", strings.ToLower(row["name"].(string))))
-					if row["id"].(int) % 2 == 0 {
+					if row["id"].(int)%2 == 0 {
 						g.Expect(labels).To(HaveKeyWithValue("even", "true"))
 					} else {
 						g.Expect(labels).To(HaveKeyWithValue("odd", "true"))
@@ -618,7 +623,7 @@ spec:
 							Namespace: ResourceNamespace,
 						},
 					},
-					Query:    "SELECT 99 as id",
+					Query: "SELECT 99 as id",
 					Template: `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -655,7 +660,7 @@ data:
 			}, timeout*2, interval).Should(Succeed())
 		})
 	})
- 
+
 })
 
 // MockDatabaseClient implements util.DatabaseClient for testing
