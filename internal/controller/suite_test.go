@@ -71,7 +71,7 @@ var _ = BeforeSuite(func() {
 	Expect(err).ToNot(HaveOccurred())
 
 	// Set the registeredGVKs for the test to allow ConfigMap
-	var gvkPattern = "v1/ConfigMap;apps/v1/Deployment"
+	var gvkPattern = "v1/ConfigMap;apps/v1/Deployment;v1/Namespace"
 	registeredGVKs, err := util.ParseGVKs(gvkPattern)
 	Expect(err).ToNot(HaveOccurred())
 
