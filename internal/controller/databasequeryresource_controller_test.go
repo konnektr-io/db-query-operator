@@ -24,8 +24,8 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 	const (
 		ResourceNamespace = "default"
 		SecretName        = "test-db-secret"
-		timeout  = time.Second * 10
-		interval = time.Millisecond * 250
+		timeout           = time.Second * 10
+		interval          = time.Millisecond * 250
 	)
 
 	Describe("When reconciling a DatabaseQueryResource", func() {
@@ -74,7 +74,7 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 							Namespace: ResourceNamespace,
 						},
 					},
-					Query:    "SELECT 42 as id",
+					Query: "SELECT 42 as id",
 					Template: `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -128,7 +128,7 @@ data:
 				Rows:    []util.RowResult{{"id": 7}},
 				Columns: []string{"id"},
 			}
-			
+
 			// Patch the running reconciler's DBClientFactory for this test
 			TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
 				return mock, nil
@@ -167,7 +167,7 @@ data:
 							Namespace: ResourceNamespace,
 						},
 					},
-					Query:    "SELECT 42 as id",
+					Query: "SELECT 42 as id",
 					Template: `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -213,14 +213,14 @@ data:
 				g.Expect(err).To(HaveOccurred())
 			}, timeout, interval).Should(Succeed())
 		})
-		
+
 		It("should create a resource with without namespace if cluster scoped", func() {
 			ctx := context.Background()
 			mock := &MockDatabaseClient{
 				Rows:    []util.RowResult{{"id": 7}},
 				Columns: []string{"id"},
 			}
-			
+
 			// Patch the running reconciler's DBClientFactory for this test
 			TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
 				return mock, nil
@@ -259,7 +259,7 @@ data:
 							Namespace: ResourceNamespace,
 						},
 					},
-					Query:    "SELECT 42 as id",
+					Query: "SELECT 42 as id",
 					Template: `apiVersion: v1
 kind: Namespace
 metadata:
@@ -350,7 +350,7 @@ metadata:
 							Namespace: ResourceNamespace,
 						},
 					},
-					Query:    "SELECT id, name, age FROM users",
+					Query: "SELECT id, name, age FROM users",
 					Template: `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -381,7 +381,7 @@ data:
 					labels := createdCM.GetLabels()
 					g.Expect(labels).To(HaveKeyWithValue(ManagedByLabel, "multi-dbqr"))
 					g.Expect(labels).To(HaveKeyWithValue("user-name", strings.ToLower(row["name"].(string))))
-					if row["id"].(int) % 2 == 0 {
+					if row["id"].(int)%2 == 0 {
 						g.Expect(labels).To(HaveKeyWithValue("even", "true"))
 					} else {
 						g.Expect(labels).To(HaveKeyWithValue("odd", "true"))
@@ -618,7 +618,7 @@ spec:
 							Namespace: ResourceNamespace,
 						},
 					},
-					Query:    "SELECT 99 as id",
+					Query: "SELECT 99 as id",
 					Template: `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -655,7 +655,7 @@ data:
 			}, timeout*2, interval).Should(Succeed())
 		})
 	})
- 
+
 })
 
 // MockDatabaseClient implements util.DatabaseClient for testing
