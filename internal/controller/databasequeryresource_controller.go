@@ -36,11 +36,11 @@ import (
 )
 
 const (
-	ManagedByLabel         = "konnektr.io/managed-by" // Label to identify managed resources
-	ControllerName         = "databasequeryresource-controller"
-	ConditionReconciled    = "Reconciled"
-	ConditionDBConnected   = "DBConnected"
-	DatabaseQueryFinalizer = "konnektr.io/databasequeryresource-finalizer"
+	ManagedByLabel              = "konnektr.io/managed-by" // Label to identify managed resources
+	ControllerName              = "databasequeryresource-controller"
+	ConditionReconciled         = "Reconciled"
+	ConditionDBConnected        = "DBConnected"
+	DatabaseQueryFinalizer      = "konnektr.io/databasequeryresource-finalizer"
 	LastAppliedConfigAnnotation = "konnektr.io/last-applied-configuration" // Annotation to store last applied config
 )
 
@@ -81,10 +81,10 @@ type childResourceInfo struct {
 
 // managedResourceConfig represents the configuration we track for determining if updates are needed
 type managedResourceConfig struct {
-	Spec        interface{}            `json:"spec,omitempty"`
-	Data        interface{}            `json:"data,omitempty"`        // Include data field for ConfigMaps and similar resources
-	Labels      map[string]string      `json:"labels,omitempty"`
-	Annotations map[string]string      `json:"annotations,omitempty"`
+	Spec        interface{}       `json:"spec,omitempty"`
+	Data        interface{}       `json:"data,omitempty"` // Include data field for ConfigMaps and similar resources
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // getLastAppliedConfig retrieves the last applied configuration from the annotation
@@ -93,17 +93,17 @@ func getLastAppliedConfig(obj *unstructured.Unstructured) (*managedResourceConfi
 	if annotations == nil {
 		return nil, nil
 	}
-	
+
 	lastAppliedStr, exists := annotations[LastAppliedConfigAnnotation]
 	if !exists {
 		return nil, nil
 	}
-	
+
 	var config managedResourceConfig
 	if err := json.Unmarshal([]byte(lastAppliedStr), &config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal last applied config: %w", err)
 	}
-	
+
 	return &config, nil
 }
 
@@ -114,7 +114,7 @@ func setLastAppliedConfig(obj *unstructured.Unstructured) error {
 		Labels:      obj.GetLabels(),
 		Annotations: obj.GetAnnotations(),
 	}
-	
+
 	// Don't include the last applied config annotation itself in the stored config
 	if config.Annotations != nil {
 		configAnnotations := make(map[string]string)
@@ -125,19 +125,19 @@ func setLastAppliedConfig(obj *unstructured.Unstructured) error {
 		}
 		config.Annotations = configAnnotations
 	}
-	
+
 	configBytes, err := json.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
-	
+
 	annotations := obj.GetAnnotations()
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
 	annotations[LastAppliedConfigAnnotation] = string(configBytes)
 	obj.SetAnnotations(annotations)
-	
+
 	return nil
 }
 
@@ -146,7 +146,7 @@ func (r *DatabaseQueryResourceReconciler) shouldUpdateResource(ctx context.Conte
 	// Check if the resource exists in the cluster
 	existing := &unstructured.Unstructured{}
 	existing.SetGroupVersionKind(obj.GroupVersionKind())
-	
+
 	err := r.Get(ctx, client.ObjectKeyFromObject(obj), existing)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -155,26 +155,26 @@ func (r *DatabaseQueryResourceReconciler) shouldUpdateResource(ctx context.Conte
 		}
 		return false, fmt.Errorf("failed to get existing resource: %w", err)
 	}
-	
+
 	// Resource exists, check if our desired state differs from what was last applied
 	lastApplied, err := getLastAppliedConfig(existing)
 	if err != nil {
 		return false, fmt.Errorf("failed to get last applied config from existing resource: %w", err)
 	}
-	
+
 	// If no last applied config exists, we need to update (first time managing this resource)
 	if lastApplied == nil {
 		return true, nil
 	}
-	
+
 	// Compare current desired state with last applied
 	currentConfig := managedResourceConfig{
 		Spec:        obj.Object["spec"],
-		Data:        obj.Object["data"],        // Include data field for proper change detection
+		Data:        obj.Object["data"], // Include data field for proper change detection
 		Labels:      obj.GetLabels(),
 		Annotations: obj.GetAnnotations(),
 	}
-	
+
 	// Don't include the last applied config annotation itself in the comparison
 	if currentConfig.Annotations != nil {
 		configAnnotations := make(map[string]string)
@@ -185,7 +185,7 @@ func (r *DatabaseQueryResourceReconciler) shouldUpdateResource(ctx context.Conte
 		}
 		currentConfig.Annotations = configAnnotations
 	}
-	
+
 	// Return true if there's a difference
 	return !reflect.DeepEqual(*lastApplied, currentConfig), nil
 }
@@ -412,14 +412,14 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 
 		if updateNeeded {
 			log.Info("Applying resource (update needed)", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
-			
+
 			// Set the last applied configuration before applying
 			if err := setLastAppliedConfig(obj); err != nil {
 				log.Error(err, "Failed to set last applied config", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 				rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("last applied config error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
 				continue // Skip this resource
 			}
-			
+
 			patchMethod := client.Apply
 			err = r.Patch(ctx, obj, patchMethod, client.FieldOwner(ControllerName), client.ForceOwnership)
 			if err != nil {
@@ -431,7 +431,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		} else {
 			log.V(1).Info("Resource is up-to-date, skipping apply", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 		}
-		
+
 		resourceKey := getObjectKey(obj)
 		managedResourceKeys[resourceKey] = true
 		processedRows = append(processedRows, rowData)
@@ -580,24 +580,24 @@ func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.C
 	for _, gvk := range ownedGVKs {
 		list := &unstructured.UnstructuredList{}
 		list.SetGroupVersionKind(gvk)
-		
+
 		// Check if this resource type is cluster-scoped
 		mapping, err := r.RESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version)
 		if err != nil {
 			log.Error(err, "Failed to get REST mapping for collection", "GVK", gvk)
 			continue
 		}
-		
+
 		// Use appropriate list options based on scope
 		var listOptions []client.ListOption
 		listOptions = append(listOptions, client.MatchingLabelsSelector{Selector: selector})
-		
+
 		if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
 			// Namespaced resource - limit to DBQR namespace
 			listOptions = append(listOptions, client.InNamespace(dbqr.Namespace))
 		}
 		// For cluster-scoped resources, don't add namespace limitation
-		
+
 		err = r.List(ctx, list, listOptions...)
 		if err != nil {
 			if meta.IsNoMatchError(err) || runtime.IsNotRegisteredError(err) {
