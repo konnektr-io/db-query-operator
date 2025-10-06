@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -40,6 +41,7 @@ const (
 	ConditionReconciled    = "Reconciled"
 	ConditionDBConnected   = "DBConnected"
 	DatabaseQueryFinalizer = "konnektr.io/databasequeryresource-finalizer"
+	LastAppliedConfigAnnotation = "konnektr.io/last-applied-configuration" // Annotation to store last applied config
 )
 
 // DatabaseQueryResourceReconciler reconciles a DatabaseQueryResource object
@@ -74,6 +76,103 @@ type childResourceInfo struct {
 //+kubebuilder:rbac:groups=konnektr.io,resources=databasequeryresources/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups="*",resources="*",verbs=get;list;watch;create;update;patch;delete // WARNING: Broad permissions. Scope down if possible.
+
+// Helper functions for managing last applied configuration
+
+// managedResourceConfig represents the configuration we track for determining if updates are needed
+type managedResourceConfig struct {
+	Spec        interface{}            `json:"spec,omitempty"`
+	Labels      map[string]string      `json:"labels,omitempty"`
+	Annotations map[string]string      `json:"annotations,omitempty"`
+}
+
+// getLastAppliedConfig retrieves the last applied configuration from the annotation
+func getLastAppliedConfig(obj *unstructured.Unstructured) (*managedResourceConfig, error) {
+	annotations := obj.GetAnnotations()
+	if annotations == nil {
+		return nil, nil
+	}
+	
+	lastAppliedStr, exists := annotations[LastAppliedConfigAnnotation]
+	if !exists {
+		return nil, nil
+	}
+	
+	var config managedResourceConfig
+	if err := json.Unmarshal([]byte(lastAppliedStr), &config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal last applied config: %w", err)
+	}
+	
+	return &config, nil
+}
+
+// setLastAppliedConfig stores the current configuration in the annotation
+func setLastAppliedConfig(obj *unstructured.Unstructured) error {
+	config := managedResourceConfig{
+		Spec:        obj.Object["spec"],
+		Labels:      obj.GetLabels(),
+		Annotations: obj.GetAnnotations(),
+	}
+	
+	// Don't include the last applied config annotation itself in the stored config
+	if config.Annotations != nil {
+		configAnnotations := make(map[string]string)
+		for k, v := range config.Annotations {
+			if k != LastAppliedConfigAnnotation {
+				configAnnotations[k] = v
+			}
+		}
+		config.Annotations = configAnnotations
+	}
+	
+	configBytes, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	
+	annotations := obj.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[LastAppliedConfigAnnotation] = string(configBytes)
+	obj.SetAnnotations(annotations)
+	
+	return nil
+}
+
+// needsUpdate determines if the resource needs to be updated by comparing current desired state with last applied
+func needsUpdate(obj *unstructured.Unstructured) (bool, error) {
+	lastApplied, err := getLastAppliedConfig(obj)
+	if err != nil {
+		return false, fmt.Errorf("failed to get last applied config: %w", err)
+	}
+	
+	// If no last applied config exists, we need to update (first time)
+	if lastApplied == nil {
+		return true, nil
+	}
+	
+	// Compare current desired state with last applied
+	currentConfig := managedResourceConfig{
+		Spec:        obj.Object["spec"],
+		Labels:      obj.GetLabels(),
+		Annotations: obj.GetAnnotations(),
+	}
+	
+	// Don't include the last applied config annotation itself in the comparison
+	if currentConfig.Annotations != nil {
+		configAnnotations := make(map[string]string)
+		for k, v := range currentConfig.Annotations {
+			if k != LastAppliedConfigAnnotation {
+				configAnnotations[k] = v
+			}
+		}
+		currentConfig.Annotations = configAnnotations
+	}
+	
+	// Return true if there's a difference
+	return !reflect.DeepEqual(*lastApplied, currentConfig), nil
+}
 
 // main kubernetes reconciliation loop
 // handles both polling interval and child resource updates
@@ -287,17 +386,38 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 			log.Info("Skipping owner reference: resource is cluster-scoped", "object GVK", obj.GroupVersionKind(), "object Name", obj.GetName())
 		}
 
-		log.Info("Applying resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
-		patchMethod := client.Apply
-		err = r.Patch(ctx, obj, patchMethod, client.FieldOwner(ControllerName), client.ForceOwnership)
+		// Check if update is needed by comparing with last applied configuration
+		updateNeeded, err := needsUpdate(obj)
 		if err != nil {
-			log.Error(err, "Failed to apply (create/update) resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
-			rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("apply error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
+			log.Error(err, "Failed to check if update is needed", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+			rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("update check error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
 			continue // Skip this resource
 		}
+
+		if updateNeeded {
+			log.Info("Applying resource (update needed)", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+			
+			// Set the last applied configuration before applying
+			if err := setLastAppliedConfig(obj); err != nil {
+				log.Error(err, "Failed to set last applied config", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+				rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("last applied config error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
+				continue // Skip this resource
+			}
+			
+			patchMethod := client.Apply
+			err = r.Patch(ctx, obj, patchMethod, client.FieldOwner(ControllerName), client.ForceOwnership)
+			if err != nil {
+				log.Error(err, "Failed to apply (create/update) resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+				rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("apply error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
+				continue // Skip this resource
+			}
+			log.Info("Successfully applied resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+		} else {
+			log.V(1).Info("Resource is up-to-date, skipping apply", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+		}
+		
 		resourceKey := getObjectKey(obj)
 		managedResourceKeys[resourceKey] = true
-		log.Info("Successfully applied resource", "key", resourceKey)
 		processedRows = append(processedRows, rowData)
 	}
 
