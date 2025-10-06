@@ -44,7 +44,7 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 			// Create a dummy Secret required by the controller
 			dummySecret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      SecretName,
+					Name:      "test-db-secret-1",
 					Namespace: ResourceNamespace,
 				},
 				Data: map[string][]byte{
@@ -70,7 +70,7 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 					Database: databasev1alpha1.DatabaseSpec{
 						Type: "postgres",
 						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
-							Name:      SecretName,
+							Name:      "test-db-secret-1",
 							Namespace: ResourceNamespace,
 						},
 					},
