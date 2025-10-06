@@ -553,18 +553,32 @@ func (r *DatabaseQueryResourceReconciler) getDBConfig(ctx context.Context, dbqr 
 func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, currentKeys map[string]bool, allChildren []*unstructured.Unstructured) []string {
 	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
 	var errors []string
+	
+	// Debug logging: show what we're comparing
+	currentKeysList := make([]string, 0, len(currentKeys))
+	for k := range currentKeys {
+		currentKeysList = append(currentKeysList, k)
+	}
+	log.Info("DEBUG: Pruning comparison", "currentKeys", currentKeysList, "allChildrenCount", len(allChildren))
+	
 	for _, item := range allChildren {
 		objKey := getObjectKey(item)
+		log.Info("DEBUG: Checking child resource", "objectKey", objKey, "GVK", item.GroupVersionKind(), "Name", item.GetName(), "Namespace", item.GetNamespace())
+		
 		if _, exists := currentKeys[objKey]; !exists {
-			log.Info("Pruning stale resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
+			log.Info("Pruning stale resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName(), "objectKey", objKey)
 			if err := r.Delete(ctx, item); err != nil {
 				if !apierrors.IsNotFound(err) {
 					log.Error(err, "Failed to prune resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
 					errors = append(errors, fmt.Sprintf("delete %s: %v", objKey, err))
+				} else {
+					log.Info("Resource already deleted (NotFound)", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
 				}
 			} else {
 				log.Info("Successfully pruned resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
 			}
+		} else {
+			log.Info("DEBUG: Resource is current, not pruning", "objectKey", objKey, "GVK", item.GroupVersionKind(), "Name", item.GetName())
 		}
 	}
 	return errors
