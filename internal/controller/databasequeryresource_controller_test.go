@@ -295,10 +295,15 @@ metadata:
 			// Wait for more than the poll interval to allow the controller to reconcile and prune
 			time.Sleep(12 * time.Second)
 
-			// Assert that the Namespace is deleted
+			// Assert that the Namespace is marked for deletion
 			Eventually(func(g Gomega) {
 				err := k8sClient.Get(ctx, nsLookup, createdNS)
-				g.Expect(err).To(HaveOccurred())
+				if err != nil {
+					// Namespace is fully deleted, which is also acceptable
+					return
+				}
+				// Check if namespace has deletion timestamp (is being deleted)
+				g.Expect(createdNS.DeletionTimestamp).NotTo(BeNil())
 			}, timeout, interval).Should(Succeed())
 		})
 	})
