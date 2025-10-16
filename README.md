@@ -13,6 +13,7 @@ The operator handles the reconciliation loop, ensuring that the resources in the
 
 * **CRD Driven:** Configuration is managed via a `DatabaseQueryResource` Custom Resource Definition.
 * **Database Polling:** Periodically queries a database at a configurable interval.
+* **Change Detection:** Optional efficient change detection by monitoring a timestamp column in your database table. When enabled, the operator checks for changes every few seconds (configurable) and only runs full reconciliation when changes are detected, reducing database load while maintaining quick response times.
 * **PostgreSQL Support:** Currently supports PostgreSQL databases.
 * **Custom Queries:** Execute any read-only SQL query to generate Kubernetes resources.
 * **Go Templating:** Define Kubernetes resource manifests using Go templates, allowing data from query results to be injected.
@@ -256,6 +257,112 @@ In this example:
 * The `template` generates a Kubernetes `Deployment` for each row.
 * The `statusUpdateQueryTemplate` updates the `status` field in the database based on the reconciliation outcome.
 
+## Change Detection (Optional)
+
+The operator supports efficient change detection to minimize database load while maintaining quick response times to changes. When enabled, the operator monitors a timestamp column in your database table and only performs full reconciliation when changes are detected.
+
+### How It Works
+
+Without change detection, the operator runs the full reconciliation (executing the main query and applying resources) at every `pollInterval` (e.g., every 5 minutes).
+
+With change detection enabled:
+1. The operator checks for changes every `changePollInterval` (default: 10 seconds) using a lightweight query
+2. If changes are detected, it immediately runs a full reconciliation
+3. If no changes are detected, it waits and checks again
+4. As a safety net, full reconciliation still runs at least every `pollInterval`
+
+This approach provides ~10 second response time for changes while reducing database load significantly.
+
+### Database Setup
+
+Ensure your table has a timestamp column that tracks modifications. For PostgreSQL, you can use a trigger to automatically update this column:
+
+```sql
+-- Add updated_at column if not present
+ALTER TABLE your_table ADD COLUMN updated_at TIMESTAMP DEFAULT NOW();
+
+-- Create trigger function to auto-update the timestamp
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- Create trigger
+CREATE TRIGGER update_your_table_updated_at 
+    BEFORE UPDATE ON your_table
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- Add index for efficient change detection queries
+CREATE INDEX idx_your_table_updated_at ON your_table(updated_at);
+```
+
+### Configuration Example
+
+```yaml
+apiVersion: konnektr.io/v1alpha1
+kind: DatabaseQueryResource
+metadata:
+  name: fast-response-example
+  namespace: default
+spec:
+  # Full reconciliation interval (safety net)
+  pollInterval: "5m"
+  prune: true
+  
+  # Enable change detection for fast updates
+  changeDetection:
+    enabled: true
+    tableName: "your_schema.your_table"  # Table to monitor
+    timestampColumn: "updated_at"         # Column tracking modifications
+    changePollInterval: "10s"             # Check for changes every 10 seconds
+  
+  database:
+    type: postgres
+    connectionSecretRef:
+      name: db-credentials
+  
+  query: |
+    SELECT id, name, config
+    FROM your_schema.your_table
+    WHERE status = 'active';
+  
+  template: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: resource-{{ .Row.id }}
+      namespace: {{ .Metadata.Namespace }}
+    data:
+      name: "{{ .Row.name }}"
+      config: "{{ .Row.config }}"
+```
+
+### Benefits
+
+- **Fast Response**: Changes are detected and applied within ~10 seconds instead of waiting for the full poll interval
+- **Reduced Load**: Lightweight change detection queries run frequently, expensive full queries run only when needed
+- **Safety**: Full reconciliation still occurs at `pollInterval` to catch any missed changes
+- **No Additional Tables**: Uses your existing table's timestamp column
+
+### Performance
+
+The change detection query is very efficient:
+```sql
+SELECT 1 FROM your_schema.your_table 
+WHERE updated_at > '2024-10-16T10:00:00Z' 
+LIMIT 1
+```
+
+This query:
+- Returns immediately if any changes exist
+- Uses an index on the timestamp column
+- Has minimal impact on database performance
+- Can run every few seconds without issues
+
 ## CRD Specification (`DatabaseQueryResourceSpec`)
 
 * `pollInterval` (string, required): Duration string specifying how often to poll the database (e.g., `"30s"`, `"5m"`, `"1h"`).
@@ -303,6 +410,11 @@ In this example:
   ```
 
   * You can use standard Go template functions. Access row data via `.Row.column_name`. Access parent CR metadata via `.Metadata.Namespace`, etc.
+* `changeDetection` (object, optional): Configuration for efficient change detection polling.
+  * `enabled` (boolean, required): Enable or disable change detection.
+  * `tableName` (string, required): The database table to monitor for changes (can include schema, e.g., `"myschema.mytable"`).
+  * `timestampColumn` (string, required): The column name that tracks when rows were last modified (e.g., `"updated_at"`).
+  * `changePollInterval` (string, optional, default: `"10s"`): How often to check for changes. Should be shorter than `pollInterval` for responsive updates.
 
 ## Cascading Deletion and Finalizer Logic
 

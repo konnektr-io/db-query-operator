@@ -75,7 +75,7 @@ type childResourceInfo struct {
 //+kubebuilder:rbac:groups=konnektr.io,resources=databasequeryresources/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=konnektr.io,resources=databasequeryresources/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
-//+kubebuilder:rbac:groups="*",resources="*",verbs=get;list;watch;create;update;patch;delete // WARNING: Broad permissions. Scope down if possible.
+//+kubebuilder:rbac:groups="*",resources="*",verbs=get;list;watch;create;update;patch;delete
 
 // Helper functions for managing last applied configuration
 
@@ -300,6 +300,16 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, nil // Don't requeue invalid spec
 	}
 
+	// Determine if we should reconcile based on change detection
+	shouldReconcile, nextCheckInterval := r.shouldReconcile(ctx, dbqr, log, pollInterval)
+	
+	if !shouldReconcile {
+		log.V(1).Info("No changes detected, skipping reconciliation", "nextCheck", nextCheckInterval)
+		return ctrl.Result{RequeueAfter: nextCheckInterval}, nil
+	}
+
+	log.Info("Running full reconciliation")
+
 	// Get Database Connection Details
 	dbConfig, err := r.getDBConfig(ctx, dbqr)
 	if err != nil {
@@ -479,6 +489,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	log.Info("Reconciliation successful", "managedResourceCount", len(managedResourceKeys))
 	now := metav1.Now()
 	dbqr.Status.LastPollTime = &now
+	dbqr.Status.LastReconcileTime = &now
 	setCondition(dbqr, ConditionReconciled, metav1.ConditionTrue, "Success", "Successfully queried DB and reconciled resources")
 
 	return ctrl.Result{RequeueAfter: pollInterval}, nil
@@ -695,66 +706,6 @@ func truncateError(msg string, maxLen int) string {
 	return msg
 }
 
-// createOrUpdateResource implements the CreateOrUpdate logic.
-// Deprecated in favor of Server-Side Apply (Patch), but kept as a fallback example.
-func (r *DatabaseQueryResourceReconciler) createOrUpdateResource(ctx context.Context, obj *unstructured.Unstructured) error {
-	log := r.Log.WithValues("object", getObjectKey(obj))
-	existing := &unstructured.Unstructured{}
-	existing.SetGroupVersionKind(obj.GroupVersionKind())
-
-	err := r.Get(ctx, client.ObjectKeyFromObject(obj), existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Creating new resource")
-			if createErr := r.Create(ctx, obj); createErr != nil {
-				log.Error(createErr, "Failed to create resource")
-				return createErr
-			}
-			log.Info("Resource created successfully")
-			return nil
-		}
-		log.Error(err, "Failed to get existing resource")
-		return err
-	}
-
-	// Resource exists, check if update is needed
-	// Simple comparison: If resource versions differ, or some key fields differ.
-	// A more robust diff would be needed for perfect updates, Server-Side Apply handles this better.
-	// We need to preserve fields set by other controllers or users.
-	// Copying required fields and metadata.
-	// Warning: This simple update might overwrite changes made by others. SSA is preferred.
-
-	// Preserve resource version for update
-	obj.SetResourceVersion(existing.GetResourceVersion())
-	// Preserve ClusterIP if it's a Service and already set
-	if existing.GetKind() == "Service" {
-		if clusterIP, found, _ := unstructured.NestedString(existing.Object, "spec", "clusterIP"); found && clusterIP != "" && clusterIP != "None" {
-			if _, objHasIP, _ := unstructured.NestedString(obj.Object, "spec", "clusterIP"); !objHasIP || unstructured.SetNestedField(obj.Object, clusterIP, "spec", "clusterIP") != nil {
-				log.Info("Preserving existing ClusterIP", "ClusterIP", clusterIP)
-				unstructured.SetNestedField(obj.Object, clusterIP, "spec", "clusterIP")
-			}
-		}
-	}
-
-	// Check if an update is actually needed (very basic check)
-	// This is where Server-Side Apply shines as it handles this comparison server-side.
-	// For CreateOrUpdate, a deep comparison library or manual checks are often needed.
-	if reflect.DeepEqual(obj.Object["spec"], existing.Object["spec"]) &&
-		reflect.DeepEqual(obj.GetLabels(), existing.GetLabels()) &&
-		reflect.DeepEqual(obj.GetAnnotations(), existing.GetAnnotations()) {
-		log.Info("Resource is already up-to-date")
-		return nil
-	}
-
-	log.Info("Updating existing resource")
-	if updateErr := r.Update(ctx, obj); updateErr != nil {
-		log.Error(updateErr, "Failed to update resource")
-		return updateErr
-	}
-	log.Info("Resource updated successfully")
-	return nil
-}
-
 // SetupWithManagerAndGVKs sets up the controller with the Manager and watches the specified GVKs as owned resources.
 func (r *DatabaseQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manager, ownedGVKs []schema.GroupVersionKind) error {
 	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
@@ -809,4 +760,132 @@ func (r *DatabaseQueryResourceReconciler) getOrCreateDBClient(ctx context.Contex
 	default:
 		return nil, fmt.Errorf("unsupported database type: %s", dbqr.Spec.Database.Type)
 	}
+}
+
+// shouldReconcile determines if a full reconciliation should run
+// Returns: (shouldReconcile bool, nextCheckInterval time.Duration)
+func (r *DatabaseQueryResourceReconciler) shouldReconcile(
+	ctx context.Context,
+	dbqr *databasev1alpha1.DatabaseQueryResource,
+	log logr.Logger,
+	pollInterval time.Duration,
+) (bool, time.Duration) {
+
+	// If change detection is not enabled, always reconcile at pollInterval
+	if dbqr.Spec.ChangeDetection == nil || !dbqr.Spec.ChangeDetection.Enabled {
+		return true, pollInterval
+	}
+
+	// Parse change poll interval
+	changePollInterval := 10 * time.Second // default
+	if dbqr.Spec.ChangeDetection.ChangePollInterval != "" {
+		var err error
+		changePollInterval, err = time.ParseDuration(dbqr.Spec.ChangeDetection.ChangePollInterval)
+		if err != nil {
+			log.Error(err, "Invalid changePollInterval, using default 10s")
+			changePollInterval = 10 * time.Second
+		}
+	}
+
+	now := time.Now()
+
+	// Force full reconciliation if we haven't reconciled within pollInterval
+	if dbqr.Status.LastReconcileTime != nil {
+		timeSinceLastReconcile := now.Sub(dbqr.Status.LastReconcileTime.Time)
+		if timeSinceLastReconcile >= pollInterval {
+			log.V(1).Info("Full reconciliation interval reached",
+				"timeSinceLastReconcile", timeSinceLastReconcile,
+				"pollInterval", pollInterval)
+			return true, pollInterval
+		}
+	} else {
+		// First run - always reconcile
+		log.Info("First reconciliation run")
+		return true, pollInterval
+	}
+
+	// Check if enough time has passed since last change check
+	if dbqr.Status.LastChangeCheckTime != nil {
+		timeSinceLastCheck := now.Sub(dbqr.Status.LastChangeCheckTime.Time)
+		if timeSinceLastCheck < changePollInterval {
+			// Not time to check yet
+			return false, changePollInterval - timeSinceLastCheck
+		}
+	}
+
+	// Perform change detection query
+	hasChanges, err := r.detectChanges(ctx, dbqr, log)
+	if err != nil {
+		log.Error(err, "Error detecting changes, forcing reconciliation")
+		return true, pollInterval
+	}
+
+	// Update last change check time
+	nowMeta := metav1.Now()
+	dbqr.Status.LastChangeCheckTime = &nowMeta
+	if err := r.Status().Update(ctx, dbqr); err != nil {
+		log.Error(err, "Failed to update LastChangeCheckTime")
+	}
+
+	if hasChanges {
+		log.Info("Changes detected in database")
+		return true, pollInterval
+	}
+
+	// No changes, check again after changePollInterval
+	return false, changePollInterval
+}
+
+// detectChanges runs the change detection query
+func (r *DatabaseQueryResourceReconciler) detectChanges(
+	ctx context.Context,
+	dbqr *databasev1alpha1.DatabaseQueryResource,
+	log logr.Logger,
+) (bool, error) {
+
+	// Get database configuration
+	dbConfig, err := r.getDBConfig(ctx, dbqr)
+	if err != nil {
+		return false, fmt.Errorf("failed to get database configuration: %w", err)
+	}
+
+	// Get database connection
+	db, err := r.getOrCreateDBClient(ctx, dbqr, dbConfig)
+	if err != nil {
+		return false, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	defer db.Close(ctx)
+
+	// Use last check time, or use a time far in the past for first check
+	var lastCheckTime time.Time
+	if dbqr.Status.LastChangeCheckTime != nil {
+		lastCheckTime = dbqr.Status.LastChangeCheckTime.Time
+	} else {
+		// First check - use a time that will catch all existing records
+		lastCheckTime = time.Unix(0, 0)
+	}
+
+	// Execute query - we need to use raw query with parameters
+	// Since the DatabaseClient interface uses Query(ctx, query string), we need to format it
+	// For PostgreSQL, we'll format the timestamp parameter directly
+	formattedQuery := fmt.Sprintf(
+		"SELECT 1 FROM %s WHERE %s > '%s' LIMIT 1",
+		dbqr.Spec.ChangeDetection.TableName,
+		dbqr.Spec.ChangeDetection.TimestampColumn,
+		lastCheckTime.Format(time.RFC3339Nano),
+	)
+
+	log.V(1).Info("Running change detection query",
+		"query", formattedQuery,
+		"lastCheckTime", lastCheckTime)
+
+	rows, _, err := db.Query(ctx, formattedQuery)
+	if err != nil {
+		return false, fmt.Errorf("change detection query failed: %w", err)
+	}
+
+	// If we get any row, changes were detected
+	hasChanges := len(rows) > 0
+
+	return hasChanges, nil
 }

@@ -82,6 +82,33 @@ type DatabaseQueryResourceSpec struct {
 	// The template will receive a map[string]interface{} named `Row` representing the database row.
 	// +kubebuilder:validation:Optional
 	StatusUpdateQueryTemplate string `json:"statusUpdateQueryTemplate,omitempty"`
+
+	// ChangeDetection enables efficient reconciliation by detecting changes in the database.
+	// When enabled, the operator will poll for changes at changePollInterval and only run
+	// the full reconciliation when changes are detected or when pollInterval is reached.
+	// +optional
+	ChangeDetection *ChangeDetectionConfig `json:"changeDetection,omitempty"`
+}
+
+// ChangeDetectionConfig configures change detection polling for efficient reconciliation.
+type ChangeDetectionConfig struct {
+	// Enabled turns on change detection polling.
+	Enabled bool `json:"enabled"`
+
+	// TableName is the database table to monitor for changes.
+	// +kubebuilder:validation:Required
+	TableName string `json:"tableName"`
+
+	// TimestampColumn is the column name that tracks when rows were last modified.
+	// +kubebuilder:validation:Required
+	TimestampColumn string `json:"timestampColumn"`
+
+	// ChangePollInterval is how often to check for changes (default: "10s").
+	// This should be shorter than spec.pollInterval for responsive updates.
+	// +optional
+	// +kubebuilder:default="10s"
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+	ChangePollInterval string `json:"changePollInterval,omitempty"`
 }
 
 // DatabaseQueryResourceStatus defines the observed state of DatabaseQueryResource
@@ -102,6 +129,15 @@ type DatabaseQueryResourceStatus struct {
 	// ObservedGeneration reflects the generation of the CR spec that was last processed.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// LastChangeCheckTime is the timestamp used in the last change detection query.
+	// This is the value passed as the timestamp parameter in the change detection query.
+	// +optional
+	LastChangeCheckTime *metav1.Time `json:"lastChangeCheckTime,omitempty"`
+
+	// LastReconcileTime tracks when we last ran a full reconciliation.
+	// +optional
+	LastReconcileTime *metav1.Time `json:"lastReconcileTime,omitempty"`
 }
 
 //+kubebuilder:object:root=true
