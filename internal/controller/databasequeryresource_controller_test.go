@@ -661,6 +661,193 @@ data:
 		})
 	})
 
+	Describe("Change Detection functionality", func() {
+		It("should detect changes using timestamp column and reconcile quickly", func() {
+			ctx := context.Background()
+			
+			// Mock database with initial data and timestamp
+			initialTime := time.Now().Add(-1 * time.Hour)
+			mock := &MockDatabaseClient{
+				Rows: []util.RowResult{
+					{"id": 100, "name": "test-resource", "updated_at": initialTime},
+				},
+				Columns: []string{"id", "name", "updated_at"},
+			}
+
+			TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
+				return mock, nil
+			}
+
+			// Create secret
+			dummySecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "change-detect-secret",
+					Namespace: ResourceNamespace,
+				},
+				Data: map[string][]byte{
+					"host":     []byte("localhost"),
+					"port":     []byte("5432"),
+					"username": []byte("testuser"),
+					"password": []byte("testpass"),
+					"dbname":   []byte("testdb"),
+					"sslmode":  []byte("disable"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, dummySecret)).To(Succeed())
+
+			// Create DatabaseQueryResource with change detection enabled
+			dbqr := &databasev1alpha1.DatabaseQueryResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "change-detect-dbqr",
+					Namespace: ResourceNamespace,
+				},
+				Spec: databasev1alpha1.DatabaseQueryResourceSpec{
+					PollInterval: "5m", // Long interval to test change detection
+					Prune:        ptrBool(true),
+					Database: databasev1alpha1.DatabaseSpec{
+						Type: "postgres",
+						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
+							Name:      "change-detect-secret",
+							Namespace: ResourceNamespace,
+						},
+					},
+					ChangeDetection: &databasev1alpha1.ChangeDetectionConfig{
+						Enabled:            true,
+						TableName:          "test_table",
+						TimestampColumn:    "updated_at",
+						ChangePollInterval: "2s", // Check frequently for test
+					},
+					Query: "SELECT id, name FROM test_table",
+					Template: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: change-test-{{ .Row.id }}
+  namespace: default
+data:
+  name: "{{ .Row.name }}"`,
+				},
+			}
+			Expect(k8sClient.Create(ctx, dbqr)).To(Succeed())
+
+			// Wait for initial reconciliation
+			lookupKey := types.NamespacedName{Name: "change-detect-dbqr", Namespace: ResourceNamespace}
+			created := &databasev1alpha1.DatabaseQueryResource{}
+			By("Checking initial reconciliation completes")
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+				g.Expect(created.Status.LastReconcileTime).NotTo(BeNil())
+				g.Expect(created.Status.LastChangeCheckTime).NotTo(BeNil())
+			}, timeout, interval).Should(Succeed())
+
+			// Verify ConfigMap was created
+			cmName := "change-test-100"
+			cmLookup := types.NamespacedName{Name: cmName, Namespace: ResourceNamespace}
+			createdCM := &corev1.ConfigMap{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
+				g.Expect(createdCM.Data["name"]).To(Equal("test-resource"))
+			}, timeout, interval).Should(Succeed())
+
+			// Simulate a change in the database by updating the timestamp
+			// Change detection query should pick this up
+			newTime := time.Now()
+			mock.mu.Lock()
+			mock.Rows = []util.RowResult{
+				{"id": 100, "name": "updated-resource", "updated_at": newTime},
+			}
+			mock.mu.Unlock()
+
+			// Wait for change detection to trigger reconciliation
+			// Should happen within a few seconds (changePollInterval = 2s)
+			By("Waiting for change detection to trigger update")
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
+				g.Expect(createdCM.Data["name"]).To(Equal("updated-resource"))
+			}, time.Second*10, interval).Should(Succeed())
+
+			// Verify that LastChangeCheckTime was updated
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+				g.Expect(created.Status.LastChangeCheckTime).NotTo(BeNil())
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("should perform full reconciliation when change detection is disabled", func() {
+			ctx := context.Background()
+			mock := &MockDatabaseClient{
+				Rows:    []util.RowResult{{"id": 200}},
+				Columns: []string{"id"},
+			}
+
+			TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
+				return mock, nil
+			}
+
+			dummySecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-change-detect-secret",
+					Namespace: ResourceNamespace,
+				},
+				Data: map[string][]byte{
+					"host":     []byte("localhost"),
+					"port":     []byte("5432"),
+					"username": []byte("testuser"),
+					"password": []byte("testpass"),
+					"dbname":   []byte("testdb"),
+					"sslmode":  []byte("disable"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, dummySecret)).To(Succeed())
+
+			// Create DBQR without change detection
+			dbqr := &databasev1alpha1.DatabaseQueryResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-change-detect-dbqr",
+					Namespace: ResourceNamespace,
+				},
+				Spec: databasev1alpha1.DatabaseQueryResourceSpec{
+					PollInterval: "10s",
+					Prune:        ptrBool(true),
+					Database: databasev1alpha1.DatabaseSpec{
+						Type: "postgres",
+						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
+							Name:      "no-change-detect-secret",
+							Namespace: ResourceNamespace,
+						},
+					},
+					// No ChangeDetection config
+					Query: "SELECT 200 as id",
+					Template: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: no-change-test-{{ .Row.id }}
+  namespace: default
+data:
+  foo: bar`,
+				},
+			}
+			Expect(k8sClient.Create(ctx, dbqr)).To(Succeed())
+
+			// Verify it still reconciles normally
+			lookupKey := types.NamespacedName{Name: "no-change-detect-dbqr", Namespace: ResourceNamespace}
+			created := &databasev1alpha1.DatabaseQueryResource{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+				g.Expect(created.Status.LastReconcileTime).NotTo(BeNil())
+				// LastChangeCheckTime should be nil when change detection is disabled
+				g.Expect(created.Status.LastChangeCheckTime).To(BeNil())
+			}, timeout, interval).Should(Succeed())
+
+			// ConfigMap should be created
+			cmName := "no-change-test-200"
+			cmLookup := types.NamespacedName{Name: cmName, Namespace: ResourceNamespace}
+			createdCM := &corev1.ConfigMap{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
+			}, timeout, interval).Should(Succeed())
+		})
+	})
+
 })
 
 // MockDatabaseClient implements util.DatabaseClient for testing
