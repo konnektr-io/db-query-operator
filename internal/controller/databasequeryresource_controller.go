@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"reflect"
 	"sort"
 	"strings"
@@ -56,19 +57,6 @@ type DatabaseQueryResourceReconciler struct {
 
 	DBClientFactory func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error)
 	OwnedGVKs       []schema.GroupVersionKind // Add this field to hold owned GVKs
-}
-
-// Key for context value to indicate child resource event
-var childResourceEventKey = struct{}{}
-
-// Info about the triggering child resource
-// Used to pass to context for status update
-// Only minimal info needed for status update
-// (GVK, namespace, name)
-type childResourceInfo struct {
-	GVK       schema.GroupVersionKind
-	Namespace string
-	Name      string
 }
 
 //+kubebuilder:rbac:groups=konnektr.io,resources=databasequeryresources,verbs=get;list;watch;create;update;patch;delete
@@ -495,6 +483,61 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	return ctrl.Result{RequeueAfter: pollInterval}, nil
 }
 
+// parsePostgreSQLURI parses a PostgreSQL connection URI and returns connection parameters.
+// Format: postgresql://username:password@host:port/dbname?sslmode=...
+func (r *DatabaseQueryResourceReconciler) parsePostgreSQLURI(uri string) (map[string]string, error) {
+	// Parse the URI using url.Parse
+	parsedURL, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URI format: %w", err)
+	}
+
+	// Validate scheme
+	if parsedURL.Scheme != "postgresql" && parsedURL.Scheme != "postgres" {
+		return nil, fmt.Errorf("unsupported scheme '%s', expected 'postgresql' or 'postgres'", parsedURL.Scheme)
+	}
+
+	config := make(map[string]string)
+
+	// Extract username and password
+	if parsedURL.User != nil {
+		config["username"] = parsedURL.User.Username()
+		if password, ok := parsedURL.User.Password(); ok {
+			config["password"] = password
+		}
+	}
+
+	// Extract host and port
+	host := parsedURL.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("host not found in URI")
+	}
+	config["host"] = host
+
+	port := parsedURL.Port()
+	if port == "" {
+		port = "5432" // Default PostgreSQL port
+	}
+	config["port"] = port
+
+	// Extract database name from path
+	dbname := strings.TrimPrefix(parsedURL.Path, "/")
+	if dbname == "" {
+		return nil, fmt.Errorf("database name not found in URI")
+	}
+	config["dbname"] = dbname
+
+	// Extract query parameters (e.g., sslmode)
+	queryParams := parsedURL.Query()
+	if sslmode := queryParams.Get("sslmode"); sslmode != "" {
+		config["sslmode"] = sslmode
+	} else {
+		config["sslmode"] = "prefer" // Default
+	}
+
+	return config, nil
+}
+
 // getDBConfig retrieves database connection details from the referenced Secret.
 func (r *DatabaseQueryResourceReconciler) getDBConfig(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource) (map[string]string, error) {
 	secretRef := dbqr.Spec.Database.ConnectionSecretRef
@@ -512,6 +555,26 @@ func (r *DatabaseQueryResourceReconciler) getDBConfig(ctx context.Context, dbqr 
 		return nil, fmt.Errorf("failed to get secret '%s/%s': %w", secretNamespace, secretName, err)
 	}
 
+	// Check if URIKey is specified and use it if available
+	if secretRef.URIKey != "" {
+		uriBytes, ok := secret.Data[secretRef.URIKey]
+		if !ok {
+			return nil, fmt.Errorf("URIKey '%s' not found in secret '%s/%s'", secretRef.URIKey, secretNamespace, secretName)
+		}
+		
+		uri := string(uriBytes)
+		config, err := r.parsePostgreSQLURI(uri)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse PostgreSQL URI from key '%s': %w", secretRef.URIKey, err)
+		}
+		
+		r.Log.Info("Using connection URI from secret", "secret", secretName, "uriKey", secretRef.URIKey)
+		return config, nil
+	}
+
+	// Fallback to individual field parsing
+	r.Log.Info("Using individual connection fields from secret", "secret", secretName)
+	
 	// Get values using defaults
 	getValue := func(key, defaultValue string) (string, error) {
 		if key == "" {

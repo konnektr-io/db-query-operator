@@ -130,6 +130,42 @@ Apply the secret:
 kubectl apply -f db-credentials.yaml
 ```
 
+#### Using CloudNativePG (CNPG) Secrets
+
+If you're using [CloudNativePG](https://cloudnative-pg.io/) to manage your PostgreSQL clusters, the operator can directly use the auto-generated secrets with the `uriKey` field:
+
+```yaml
+apiVersion: konnektr.io/v1alpha1
+kind: DatabaseQueryResource
+metadata:
+  name: cnpg-example
+  namespace: default
+spec:
+  pollInterval: "1m"
+  database:
+    type: postgres
+    connectionSecretRef:
+      # CNPG generates secrets named <cluster>-app
+      name: my-postgres-cluster-app
+      # If database is in a different namespace, specify it
+      namespace: database-namespace
+      # Use the fqdn-uri field from CNPG secret
+      uriKey: fqdn-uri
+  query: "SELECT * FROM my_table;"
+  template: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: resource-{{ .Row.id }}
+```
+
+The `fqdn-uri` field in CNPG secrets contains a complete connection string like:
+```
+postgresql://user:password@service.namespace.svc.cluster.local:5432/dbname
+```
+
+This automatically handles the full qualified domain name (FQDN) for cross-namespace connections.
+
 ## Usage
 
 Create a `DatabaseQueryResource` custom resource to tell the operator which database to query and how to generate resources.
@@ -154,6 +190,12 @@ spec:
       name: db-credentials
       # Optional: Namespace of the Secret (defaults to this CR's namespace)
       # namespace: database-secrets
+      
+      # Option 1: Use a complete connection URI (recommended for CNPG)
+      # If your secret contains a full connection URI (e.g., from CloudNativePG's fqdn-uri field)
+      # uriKey: fqdn-uri
+      
+      # Option 2: Use individual connection fields (original approach)
       # Optional: Override default keys in the Secret
       # hostKey: DB_HOST
       # portKey: DB_PORT
@@ -372,6 +414,7 @@ This query:
   * `connectionSecretRef` (object, required): Reference to the Secret containing connection details.
     * `name` (string, required): Name of the Secret.
     * `namespace` (string, optional): Namespace of the Secret. Defaults to the `DatabaseQueryResource`'s namespace.
+    * `uriKey` (string, optional): Key in the Secret containing a complete PostgreSQL connection URI (format: `postgresql://username:password@host:port/dbname?sslmode=...`). If provided, this takes precedence over individual connection fields. This is useful for CloudNativePG-generated secrets which provide an `fqdn-uri` field.
     * `hostKey` (string, optional): Key in the Secret for the hostname. Defaults to `"host"`.
     * `portKey` (string, optional): Key in the Secret for the port. Defaults to `"port"`.
     * `userKey` (string, optional): Key in the Secret for the username. Defaults to `"username"`.
