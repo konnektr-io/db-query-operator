@@ -1,0 +1,435 @@
+---
+title: Installation
+description: Detailed installation guide for the Database Query Operator
+---
+
+# Installation
+
+This guide covers all installation methods for the DB Query Operator, from quick starts to production deployments.
+
+## Prerequisites
+
+- **Kubernetes**: v1.24 or later
+- **Helm**: v3.8 or later
+- **kubectl**: Configured to access your cluster
+- **PostgreSQL**: v12 or later
+
+## Installation Methods
+
+### Method 1: Helm with OCI Registry (Recommended)
+
+The operator is published as an OCI artifact to GitHub Container Registry:
+
+```bash
+helm install db-query-operator \
+  oci://ghcr.io/konnektr-io/charts/db-query-operator \
+  --version 0.6.0 \
+  --namespace dbqo-system \
+  --create-namespace
+```
+
+**Advantages**:
+- Direct pull from GHCR
+- Version immutability
+- Faster downloads
+
+### Method 2: Helm Repository
+
+Add the Konnektr Helm repository:
+
+```bash
+# Add repository
+helm repo add konnektr https://charts.konnektr.io
+helm repo update
+
+# Install operator
+helm install db-query-operator konnektr/db-query-operator \
+  --namespace dbqo-system \
+  --create-namespace
+```
+
+### Method 3: Install CRDs Only
+
+If you want to install CRDs separately (e.g., for GitOps workflows):
+
+```bash
+kubectl apply -f https://github.com/konnektr-io/db-query-operator/releases/latest/download/crds.yaml
+```
+
+Then install the operator without CRDs:
+
+```bash
+helm install db-query-operator \
+  oci://ghcr.io/konnektr-io/charts/db-query-operator \
+  --namespace dbqo-system \
+  --create-namespace \
+  --skip-crds
+```
+
+## Configuration Options
+
+### Required: Resource Types (GVK Pattern)
+
+The operator needs to know which Kubernetes resource types it can manage. Configure this with `gvkPattern`:
+
+```bash
+helm install db-query-operator \
+  oci://ghcr.io/konnektr-io/charts/db-query-operator \
+  --namespace dbqo-system \
+  --create-namespace \
+  --set gvkPattern="v1/ConfigMap;apps/v1/Deployment;argoproj.io/v1alpha1/Application"
+```
+
+**Format**: `<group>/<version>/<Kind>` or `<version>/<Kind>` for core resources
+
+**Common Examples**:
+- Core resources: `v1/ConfigMap`, `v1/Secret`, `v1/Service`, `v1/Namespace`
+- Apps: `apps/v1/Deployment`, `apps/v1/StatefulSet`, `apps/v1/DaemonSet`
+- Batch: `batch/v1/Job`, `batch/v1/CronJob`
+- ArgoCD: `argoproj.io/v1alpha1/Application`
+- CNPG: `postgresql.cnpg.io/v1/Cluster`
+- Kusto: `kusto.azure.com/v1api20230815/Database`
+
+Use semicolons to separate multiple types.
+
+### Image Configuration
+
+Specify custom image registry or version:
+
+```bash
+--set image.repository=ghcr.io/konnektr-io/db-query-operator \
+--set image.tag=0.6.0 \
+--set image.pullPolicy=IfNotPresent
+```
+
+### Resource Limits
+
+Configure CPU and memory:
+
+```bash
+--set resources.limits.cpu=500m \
+--set resources.limits.memory=256Mi \
+--set resources.requests.cpu=100m \
+--set resources.requests.memory=128Mi
+```
+
+### Namespace Override
+
+Deploy to a specific namespace (creates if doesn't exist):
+
+```bash
+--set namespaceOverride=my-operators
+```
+
+### Service Account
+
+Use an existing service account:
+
+```bash
+--set serviceAccount.create=false \
+--set serviceAccount.name=my-service-account
+```
+
+### Security Context
+
+The chart includes secure defaults:
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+```
+
+## Complete Installation Example
+
+Here's a production-ready installation:
+
+```bash
+helm install db-query-operator \
+  oci://ghcr.io/konnektr-io/charts/db-query-operator \
+  --version 0.6.0 \
+  --namespace dbqo-system \
+  --create-namespace \
+  --set gvkPattern="v1/ConfigMap;v1/Secret;apps/v1/Deployment;argoproj.io/v1alpha1/Application;postgresql.cnpg.io/v1/Cluster" \
+  --set resources.limits.cpu=1000m \
+  --set resources.limits.memory=512Mi \
+  --set resources.requests.cpu=200m \
+  --set resources.requests.memory=256Mi \
+  --set replicaCount=1
+```
+
+## Values File
+
+Alternatively, create a `values.yaml` file:
+
+```yaml title="values.yaml"
+replicaCount: 1
+
+image:
+  repository: ghcr.io/konnektr-io/db-query-operator
+  tag: "0.6.0"
+  pullPolicy: IfNotPresent
+
+gvkPattern: "v1/ConfigMap;v1/Secret;apps/v1/Deployment;argoproj.io/v1alpha1/Application"
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+serviceAccount:
+  create: true
+  name: ""
+
+rbac:
+  create: true
+
+securityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+```
+
+Install with the values file:
+
+```bash
+helm install db-query-operator \
+  oci://ghcr.io/konnektr-io/charts/db-query-operator \
+  --version 0.6.0 \
+  --namespace dbqo-system \
+  --create-namespace \
+  -f values.yaml
+```
+
+## Verification
+
+Check that the operator is running:
+
+```bash
+# Check pod status
+kubectl get pods -n dbqo-system
+
+# View operator logs
+kubectl logs -n dbqo-system -l app.kubernetes.io/name=db-query-operator -f
+
+# Check CRD installation
+kubectl get crd databasequeryresources.konnektr.io
+```
+
+Expected output:
+
+```
+NAME                                                   READY   STATUS    RESTARTS   AGE
+db-query-operator-xxxxx-xxxxx                         1/1     Running   0          30s
+```
+
+## Upgrading
+
+### Helm Upgrade
+
+```bash
+helm upgrade db-query-operator \
+  oci://ghcr.io/konnektr-io/charts/db-query-operator \
+  --version 0.7.0 \
+  --namespace dbqo-system \
+  --reuse-values
+```
+
+### Check Release History
+
+```bash
+helm history db-query-operator -n dbqo-system
+```
+
+### Rollback
+
+```bash
+helm rollback db-query-operator <revision> -n dbqo-system
+```
+
+## Uninstallation
+
+### Remove Helm Release
+
+```bash
+helm uninstall db-query-operator -n dbqo-system
+```
+
+**Note**: This does NOT delete:
+- DatabaseQueryResource custom resources
+- Resources managed by DBQRs
+- The namespace `dbqo-system`
+
+### Delete CRDs
+
+```bash
+kubectl delete crd databasequeryresources.konnektr.io
+```
+
+**Warning**: Deleting the CRD will delete all DatabaseQueryResource instances!
+
+### Complete Cleanup
+
+```bash
+# 1. Delete all DatabaseQueryResources (optional: manage cleanup)
+kubectl delete databasequeryresources --all --all-namespaces
+
+# 2. Uninstall Helm release
+helm uninstall db-query-operator -n dbqo-system
+
+# 3. Delete CRDs
+kubectl delete crd databasequeryresources.konnektr.io
+
+# 4. Delete namespace
+kubectl delete namespace dbqo-system
+```
+
+## GitOps Deployment (ArgoCD)
+
+For GitOps workflows, create an ArgoCD Application:
+
+```yaml title="argocd-app.yaml"
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: db-query-operator
+  namespace: argocd
+spec:
+  project: default
+  source:
+    chart: db-query-operator
+    repoURL: https://charts.konnektr.io
+    targetRevision: 0.6.0
+    helm:
+      values: |
+        gvkPattern: "v1/ConfigMap;apps/v1/Deployment"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dbqo-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+```
+
+Apply the Application:
+
+```bash
+kubectl apply -f argocd-app.yaml
+```
+
+## Air-Gapped Environments
+
+For air-gapped deployments:
+
+1. **Pull the Helm chart**:
+   ```bash
+   helm pull oci://ghcr.io/konnektr-io/charts/db-query-operator --version 0.6.0
+   ```
+
+2. **Pull and re-tag the image**:
+   ```bash
+   docker pull ghcr.io/konnektr-io/db-query-operator:0.6.0
+   docker tag ghcr.io/konnektr-io/db-query-operator:0.6.0 your-registry.com/db-query-operator:0.6.0
+   docker push your-registry.com/db-query-operator:0.6.0
+   ```
+
+3. **Install with custom image**:
+   ```bash
+   helm install db-query-operator ./db-query-operator-0.6.0.tgz \
+     --namespace dbqo-system \
+     --create-namespace \
+     --set image.repository=your-registry.com/db-query-operator \
+     --set image.tag=0.6.0
+   ```
+
+## RBAC Permissions
+
+The operator requires these permissions:
+
+- **DatabaseQueryResources**: Full CRUD + status updates
+- **Secrets**: Read access (for database credentials)
+- **Managed Resource Types** (configured via `gvkPattern`): Full CRUD
+
+The Helm chart automatically creates:
+- ServiceAccount
+- ClusterRole with required permissions
+- ClusterRoleBinding
+
+## Network Policies
+
+If using network policies, allow traffic:
+
+**From Operator to Database**:
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-operator-to-db
+  namespace: dbqo-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: db-query-operator
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: database-namespace
+      ports:
+        - protocol: TCP
+          port: 5432
+```
+
+**From Operator to Kubernetes API**:
+```yaml
+egress:
+  - to:
+      - namespaceSelector: {}
+    ports:
+      - protocol: TCP
+        port: 443
+```
+
+## Next Steps
+
+<Cards>
+  <Card title="Getting Started" href="/docs/db-query-operator/getting-started">
+    Create your first DatabaseQueryResource
+  </Card>
+  
+  <Card title="Configuration" href="/docs/db-query-operator/configuration">
+    Learn about all configuration options
+  </Card>
+  
+  <Card title="Examples" href="/docs/db-query-operator/examples">
+    Explore real-world use cases
+  </Card>
+</Cards>

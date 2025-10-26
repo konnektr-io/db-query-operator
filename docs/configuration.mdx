@@ -1,0 +1,568 @@
+---
+title: Configuration Reference
+description: Complete reference for DatabaseQueryResource CRD fields
+---
+
+# Configuration Reference
+
+Complete reference for all fields in the `DatabaseQueryResource` Custom Resource Definition.
+
+## CRD Specification
+
+### spec.pollInterval
+
+**Type**: `string` (duration)  
+**Required**: Yes  
+**Format**: Go duration string (e.g., `"30s"`, `"5m"`, `"1h"`)
+
+How often to query the database and reconcile resources.
+
+```yaml
+spec:
+  pollInterval: "1m"  # Query every minute
+```
+
+**Examples**:
+- `"30s"` - Every 30 seconds
+- `"5m"` - Every 5 minutes
+- `"1h"` - Every hour
+- `"2h30m"` - Every 2 hours and 30 minutes
+
+---
+
+### `spec.prune`
+
+**Type**: `boolean`  
+**Required**: No  
+**Default**: `true`
+
+Whether to delete resources that were previously managed but no longer appear in query results.
+
+```yaml
+spec:
+  prune: true  # Delete stale resources
+```
+
+**When to disable**:
+- Resources should persist after database rows are removed
+- External processes manage resource lifecycle
+- Manual cleanup is preferred
+
+---
+
+### `spec.database`
+
+**Type**: `object`  
+**Required**: Yes
+
+Database connection configuration.
+
+#### `spec.database.type`
+
+**Type**: `string`  
+**Required**: Yes  
+**Allowed values**: `postgres`
+
+Type of database to connect to.
+
+```yaml
+spec:
+  database:
+    type: postgres
+```
+
+**Future support**: MySQL, SQLite, other databases may be added.
+
+#### spec.databaseConnectionSecretRef
+
+**Type**: `object`  
+**Required**: Yes
+
+Reference to a Kubernetes Secret containing database credentials.
+
+##### `connectionSecretRef.name`
+
+**Type**: `string`  
+**Required**: Yes
+
+Name of the Secret containing connection details.
+
+```yaml
+connectionSecretRef:
+  name: db-credentials
+```
+
+##### `connectionSecretRef.namespace`
+
+**Type**: `string`  
+**Required**: No  
+**Default**: DatabaseQueryResource's namespace
+
+Namespace where the Secret is located.
+
+```yaml
+connectionSecretRef:
+  name: db-credentials
+  namespace: database-secrets
+```
+
+##### `connectionSecretRef.uriKey`
+
+**Type**: `string`  
+**Required**: No
+
+Key in the Secret containing a complete PostgreSQL connection URI.
+
+**Format**: `postgresql://username:password@host:port/dbname?sslmode=...`
+
+```yaml
+connectionSecretRef:
+  name: my-postgres-cluster-app
+  uriKey: fqdn-uri  # CloudNativePG field
+```
+
+**When provided**: Takes precedence over individual field keys.
+
+**Use case**: Perfect for CloudNativePG-generated secrets which include `fqdn-uri`.
+
+#### hostKey
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `"host"`
+
+Key in the Secret for the database hostname.
+
+```yaml
+connectionSecretRef:
+  hostKey: DB_HOST  # Secret key name
+```
+
+##### `connectionSecretRef.portKey`
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `"port"`
+
+Key in the Secret for the database port.
+
+##### `connectionSecretRef.userKey`
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `"username"`
+
+Key in the Secret for the database username.
+
+#### passwordKey
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `"password"`
+
+Key in the Secret for the database password.
+
+##### `connectionSecretRef.dbNameKey`
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `"dbname"`
+
+Key in the Secret for the database name.
+
+##### `connectionSecretRef.sslModeKey`
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `"sslmode"`
+
+Key in the Secret for the SSL mode.
+
+**SSL Modes**: `disable`, `require`, `verify-ca`, `verify-full`, `prefer`
+
+If the key is not found and not specified, defaults to `"prefer"`.
+
+**Example Secret Structure**:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+type: Opaque
+stringData:
+  host: "postgres.database.svc.cluster.local"
+  port: "5432"
+  username: "myuser"
+  password: "mypassword"
+  dbname: "mydb"
+  sslmode: "require"
+```
+
+---
+
+### spec.query
+
+**Type**: `string`  
+**Required**: Yes
+
+SQL query to execute against the database. Must return rows.
+
+**Supports**:
+- Standard SQL SELECT statements
+- Apache AGE Cypher queries
+- Multi-statement queries (setup commands + data query)
+
+```yaml
+spec:
+  query: |
+    SELECT id, name, config
+    FROM resources
+    WHERE active = true;
+```
+
+**Multi-statement example** (Apache AGE):
+
+```yaml
+spec:
+  query: |
+    LOAD '$libdir/plugins/age';
+    SET search_path = ag_catalog, "$user", public;
+    SELECT * FROM cypher('graph', $$
+      MATCH (n:Node) RETURN n.id, n.name
+    $$) AS (id text, name text);
+```
+
+**How multi-statements work**:
+1. All statements except the last are executed as a batch
+2. The final SELECT statement returns data
+3. Enables setup commands like `LOAD` and `SET`
+
+---
+
+### `spec.template`
+
+**Type**: `string`  
+**Required**: Yes
+
+Go template for rendering Kubernetes resource manifests. Each database row is rendered once.
+
+**Template Context**:
+- `.Row` - Map of column name → value for the current row
+- `.Metadata` - Parent DatabaseQueryResource metadata
+
+**Functions**: All [Sprig functions](http://masterminds.github.io/sprig/) are available.
+
+```yaml
+spec:
+  template: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: {{ .Row.name | lower | replace "_" "-" }}
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        app: {{ .Row.app_name }}
+        environment: {{ .Row.env | default "dev" }}
+    data:
+      config: {{ .Row.config | toJson }}
+      created: {{ now | date "2006-01-02" }}
+```
+
+**Common patterns**:
+
+- **String manipulation**: `{{ .Row.name | lower | replace " " "-" }}`
+- **Conditionals**: `{{ if eq .Row.env "prod" }}3{{ else }}1{{ end }}`
+- **Defaults**: `{{ .Row.replicas | default 1 }}`
+- **JSON encoding**: `{{ .Row.data | toJson }}`
+- **Base64**: `{{ .Row.secret | b64enc }}`
+
+---
+
+### spec.statusUpdateQuery
+
+**Type**: `string`  
+**Required**: No
+
+Optional Go template for an SQL query that updates the database with resource status after reconciliation.
+
+**Template Context**:
+- `.Resource` - The Kubernetes resource object (unstructured)
+
+```yaml
+spec:
+  statusUpdateQueryTemplate: |
+    UPDATE deployments
+    SET 
+      replicas = {{ .Resource.status.replicas | default 0 }},
+      ready_replicas = {{ .Resource.status.readyReplicas | default 0 }},
+      updated_at = NOW()
+    WHERE name = '{{ .Resource.metadata.name }}';
+```
+
+**Use cases**:
+- Sync Kubernetes resource status back to database
+- Update timestamps or health checks
+- Trigger database-side logic based on resource state
+
+---
+
+### `spec.changeDetection`
+
+**Type**: `object`  
+**Required**: No
+
+Optional configuration for efficient change detection polling.
+
+When enabled, the operator:
+1. Polls for changes every `changePollInterval` (lightweight query)
+2. Only runs full reconciliation when changes are detected
+3. Still runs full reconciliation at `pollInterval` as a safety net
+
+#### `changeDetection.enabled`
+
+**Type**: `boolean`  
+**Required**: Yes (if changeDetection is specified)
+
+Enable or disable change detection.
+
+#### `changeDetection.tableName`
+
+**Type**: `string`  
+**Required**: Yes (if enabled)
+
+Database table to monitor for changes. Can include schema: `"schema.table"`.
+
+#### `changeDetection.timestampColumn`
+
+**Type**: `string`  
+**Required**: Yes (if enabled)
+
+Column name that tracks when rows were last modified (e.g., `"updated_at"`, `"modified_at"`).
+
+**Requirements**:
+- Column type: `TIMESTAMP` or `TIMESTAMPTZ`
+- Should be indexed for performance
+- Auto-updated via trigger or application logic
+
+#### `changeDetection.changePollInterval`
+
+**Type**: `string` (duration)  
+**Required**: No  
+**Default**: `"10s"`
+
+How often to check for changes. Should be shorter than `spec.pollInterval`.
+
+**Example**:
+
+```yaml
+spec:
+  pollInterval: "5m"  # Full reconciliation every 5 minutes
+  changeDetection:
+    enabled: true
+    tableName: "public.resources"
+    timestampColumn: "updated_at"
+    changePollInterval: "10s"  # Check for changes every 10 seconds
+```
+
+**Database setup**:
+
+```sql
+-- Add timestamp column
+ALTER TABLE resources ADD COLUMN updated_at TIMESTAMP DEFAULT NOW();
+
+-- Create trigger to auto-update
+CREATE OR REPLACE FUNCTION update_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER resources_update_timestamp
+  BEFORE UPDATE ON resources
+  FOR EACH ROW
+  EXECUTE FUNCTION update_timestamp();
+
+-- Index for performance
+CREATE INDEX idx_resources_updated_at ON resources(updated_at);
+```
+
+---
+
+## Status Fields
+
+The operator updates these status fields on the DatabaseQueryResource.
+
+### `status.conditions`
+
+Array of condition objects indicating the current state.
+
+**Condition Types**:
+- `DBConnected` - Database connection status
+- `Reconciled` - Overall reconciliation status
+
+**Condition Structure**:
+```yaml
+status:
+  conditions:
+    - type: DBConnected
+      status: "True"
+      reason: Connected
+      message: "Successfully connected to the database"
+      lastTransitionTime: "2025-10-26T14:30:00Z"
+    - type: Reconciled
+      status: "True"
+      reason: Success
+      message: "Successfully queried DB and reconciled resources"
+      lastTransitionTime: "2025-10-26T14:30:05Z"
+```
+
+### `status.lastPollTime`
+
+Timestamp of the last successful database query.
+
+```yaml
+status:
+  lastPollTime: "2025-10-26T14:30:00Z"
+```
+
+### `status.lastReconcileTime`
+
+Timestamp of the last successful full reconciliation.
+
+```yaml
+status:
+  lastReconcileTime: "2025-10-26T14:30:05Z"
+```
+
+### `status.managedResources`
+
+Array of identifiers for resources currently managed by this DBQR.
+
+**Format**: `<group>/<version>/<namespace>/<name>` or `<group>/<version>/<name>` for cluster-scoped
+
+```yaml
+status:
+  managedResources:
+    - v1/default/frontend-config
+    - v1/default/backend-config
+    - argoproj.io/v1alpha1/argocd/my-application
+```
+
+### `status.lastChangeCheckTime`
+
+(Change detection only) Timestamp used in the last change detection query.
+
+```yaml
+status:
+  lastChangeCheckTime: "2025-10-26T14:29:50Z"
+```
+
+### `status.observedGeneration`
+
+Generation of the spec that was last processed.
+
+```yaml
+status:
+  observedGeneration: 3
+```
+
+---
+
+## Complete Example
+
+```yaml
+apiVersion: konnektr.io/v1alpha1
+kind: DatabaseQueryResource
+metadata:
+  name: comprehensive-example
+  namespace: default
+  finalizers:
+    - konnektr.io/databasequeryresource-finalizer
+spec:
+  # Reconciliation settings
+  pollInterval: "5m"
+  prune: true
+  
+  # Change detection for fast updates
+  changeDetection:
+    enabled: true
+    tableName: "public.applications"
+    timestampColumn: "updated_at"
+    changePollInterval: "10s"
+  
+  # Database connection
+  database:
+    type: postgres
+    connectionSecretRef:
+      name: postgres-cluster-app
+      namespace: database-ns
+      uriKey: fqdn-uri
+  
+  # SQL query (with Apache AGE)
+  query: |
+    LOAD '$libdir/plugins/age';
+    SET search_path = ag_catalog, "$user", public;
+    SELECT * FROM cypher('apps', $$
+      MATCH (app:Application)
+      WHERE app.active = true
+      RETURN app.id AS id,
+             app.name AS name,
+             app.replicas AS replicas,
+             app.image AS image
+    $$) AS (id text, name text, replicas int, image text);
+  
+  # Resource template
+  template: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: {{ .Row.name | lower }}
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        app: {{ .Row.name }}
+        managed-by: {{ .Metadata.Name }}
+    spec:
+      replicas: {{ .Row.replicas | default 1 }}
+      selector:
+        matchLabels:
+          app: {{ .Row.name }}
+      template:
+        metadata:
+          labels:
+            app: {{ .Row.name }}
+        spec:
+          containers:
+            - name: app
+              image: {{ .Row.image }}
+              ports:
+                - containerPort: 8080
+  
+  # Status update query
+  statusUpdateQueryTemplate: |
+    SELECT * FROM cypher('apps', $$
+      MATCH (app:Application {id: '{{ .Resource.metadata.labels.id }}'})
+      SET app.replicas = {{ .Resource.status.replicas | default 0 }},
+          app.ready_replicas = {{ .Resource.status.readyReplicas | default 0 }},
+          app.updated_at = timestamp()
+      RETURN app
+    $$) AS (app agtype);
+```
+
+## Next Steps
+
+<Cards>
+  <Card title="Examples" href="/docs/db-query-operator/examples">
+    See real-world configurations in action
+  </Card>
+  
+  <Card title="Advanced Topics" href="/docs/db-query-operator/advanced">
+    Deep dive into change detection, status updates, and more
+  </Card>
+  
+  <Card title="API Reference" href="/docs/db-query-operator/api-reference">
+    Complete CRD API documentation
+  </Card>
+</Cards>

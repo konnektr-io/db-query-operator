@@ -1,0 +1,80 @@
+name: Update Docs Repository
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: "docs-update"
+  cancel-in-progress: false
+
+jobs:
+  update-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Checkout docs repository
+        uses: actions/checkout@v4
+        with:
+          repository: konnektr-io/docs
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: docs-repo
+
+      - name: Remove existing db-query-operator docs
+        run: |
+          if [ -d "docs-repo/content/docs/db-query-operator" ]; then
+            rm -rf docs-repo/content/docs/db-query-operator
+          fi
+
+      - name: Copy docs to target repository
+        run: |
+          echo "=== Source docs content ==="
+          ls -la source/docs/
+          echo "=== Creating target directory ==="
+          mkdir -p docs-repo/content/docs/db-query-operator
+          echo "=== Copying content ==="
+          cp -r source/docs/* docs-repo/content/docs/db-query-operator/
+          echo "=== Target docs content after copy ==="
+          ls -la docs-repo/content/docs/db-query-operator/
+
+      - name: Check for changes
+        run: |
+          cd docs-repo
+          echo "=== Git status ==="
+          git status
+          echo "=== Git diff ==="
+          git diff --name-status
+          echo "=== All files in content/docs/db-query-operator ==="
+          find content/docs/db-query-operator -type f | head -20
+          echo "=== Adding all files to git ==="
+          git add content/docs/db-query-operator/
+          echo "=== Git status after add ==="
+          git status
+          echo "=== Git diff --cached ==="
+          git diff --cached --name-status
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          path: docs-repo
+          token: ${{ secrets.REPO_PAT }}
+          commit-message: "Update Konnektr DB Query Operator documentation"
+          title: "Update Konnektr DB Query Operator documentation"
+          body: |
+            This PR updates the Konnektr Graph documentation with the latest changes from the pg-age-digitaltwins repository.
+
+            **Changes:**
+            - Updated documentation content in `/content/docs/db-query-operator/`
+
+            **Source:** ${{ github.repository }}@${{ github.sha }}
+          branch: update-db-query-operator-docs
+          delete-branch: true

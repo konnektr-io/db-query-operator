@@ -1,0 +1,16 @@
+{
+    "title": "DB Query Operator",
+    "icon": "Database",
+    "description": "Kubernetes operator for managing resources based on database query results",
+    "pages": [
+        "index",
+        "getting-started",
+        "core-concepts",
+        "installation",
+        "configuration",
+        "examples",
+        "advanced",
+        "api-reference",
+        "troubleshooting"
+    ]
+}

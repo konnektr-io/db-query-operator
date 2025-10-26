@@ -1,0 +1,633 @@
+---
+title: Troubleshooting
+description: Common issues and solutions
+---
+
+# Troubleshooting
+
+Common problems and their solutions when using the DB Query Operator.
+
+## Connection Issues
+
+### Error: "connection refused"
+
+**Symptom**:
+```
+Error: failed to connect to database: dial tcp :5432: connect: connection refused
+```
+
+**Causes**:
+1. Database not accessible from cluster
+2. Incorrect host/port in secret
+3. Network policies blocking traffic
+
+**Solutions**:
+
+#### Check Database Secret
+
+```bash
+kubectl get secret postgres-credentials -n my-namespace -o yaml
+```
+
+Verify fields:
+- `host` or `fqdn-uri` is correct
+- `port` matches database (usually `5432`)
+- Credentials are valid
+
+#### Test Connection from Pod
+
+```bash
+kubectl run -it --rm debug --image=postgres:15 --restart=Never -- \
+  psql -h db-host.namespace.svc.cluster.local -U myuser -d mydb
+```
+
+#### Check Network Policies
+
+```bash
+kubectl get networkpolicies -A
+kubectl describe networkpolicy <policy-name> -n <namespace>
+```
+
+---
+
+### Error: "FATAL: password authentication failed"
+
+**Symptom**:
+```
+Error: failed to authenticate: FATAL: password authentication failed for user "myuser"
+```
+
+**Solutions**:
+
+1. **Verify Secret Keys**:
+   ```bash
+   kubectl get secret my-secret -o jsonpath='{.data.password}' | base64 -d
+   ```
+
+2. **Check Secret Ref Configuration**:
+   ```yaml
+   spec:
+     database:
+       connectionSecretRef:
+         name: my-secret
+         passwordKey: password  # Must match secret key name
+         usernameKey: username
+   ```
+
+3. **Test Credentials Manually**:
+   ```bash
+   PGPASSWORD="actual-password" psql -h host -U username -d database
+   ```
+
+---
+
+### Error: "no such host"
+
+**Symptom**:
+```
+Error: lookup db-host.wrong-namespace: no such host
+```
+
+**Cause**: Incorrect hostname for cross-namespace database access.
+
+**Solution**: Use URI-based connection with FQDN:
+
+```yaml
+spec:
+  database:
+    connectionSecretRef:
+      name: postgres-creds
+      namespace: database-namespace
+      uriKey: fqdn-uri  # CloudNativePG provides this
+```
+
+Or specify full hostname:
+```yaml
+# In secret
+host: postgres-cluster-rw.database-namespace.svc.cluster.local
+```
+
+---
+
+## Query Errors
+
+### Error: "cannot insert multiple commands into a prepared statement"
+
+**Symptom**:
+```
+Error executing query: cannot insert multiple commands into a prepared statement
+```
+
+**Cause**: Using multi-statement query with older operator version.
+
+**Solution**: Upgrade to v0.6.0+ which supports multi-statement queries via `pgx.Batch`:
+
+```bash
+helm upgrade db-query-operator \
+  oci://ghcr.io/konnektr-io/charts/db-query-operator \
+  --version 0.6.0 \
+  -n dbqo-system
+```
+
+**Example Working Query**:
+```yaml
+spec:
+  query: |
+    SET statement_timeout = '30s';
+    SET search_path = myschema, public;
+    
+    SELECT id, name, config
+    FROM my_table
+    WHERE enabled = true;
+```
+
+---
+
+### Error: "relation does not exist"
+
+**Symptom**:
+```
+Error: relation "my_table" does not exist
+```
+
+**Solutions**:
+
+1. **Verify Table Name**:
+   ```sql
+   \dt  -- List tables in psql
+   SELECT tablename FROM pg_tables WHERE schemaname = 'public';
+   ```
+
+2. **Check Schema**:
+   ```yaml
+   spec:
+     query: |
+       SET search_path = my_schema, public;
+       SELECT * FROM my_table;
+   ```
+
+3. **Verify Database Name**:
+   Ensure `databaseKey` in secret points to correct database.
+
+---
+
+### Error: "column does not exist"
+
+**Symptom**:
+```
+Error: column "my_column" does not exist
+```
+
+**Solutions**:
+
+1. **Check Column Names**:
+   ```sql
+   SELECT column_name FROM information_schema.columns
+   WHERE table_name = 'my_table';
+   ```
+
+2. **Case Sensitivity**:
+   PostgreSQL folds unquoted identifiers to lowercase:
+   ```sql
+   -- Wrong (if column is actually "myColumn")
+   SELECT MyColumn FROM table;
+   
+   -- Right
+   SELECT "MyColumn" FROM table;
+   
+   -- Or rename in query
+   SELECT my_column FROM table;
+   ```
+
+---
+
+## Template Rendering Errors
+
+### Error: "template: :X:Y: executing template"
+
+**Symptom**:
+```
+Error rendering template: template: :12:5: executing "template" at <.Row.missing_field>: 
+map has no entry for key "missing_field"
+```
+
+**Cause**: Template references field not returned by query.
+
+**Solutions**:
+
+1. **Verify Query Returns Field**:
+   ```sql
+   -- Check actual query output
+   SELECT * FROM my_table LIMIT 1;
+   ```
+
+2. **Use Default Value**:
+   ```yaml
+   resourceTemplate: |
+     data:
+       value: {{ .Row.optional_field | default "default-value" }}
+   ```
+
+3. **Conditional Rendering**:
+   ```yaml
+   resourceTemplate: |
+     {{- if .Row.optional_field }}
+     data:
+       value: {{ .Row.optional_field }}
+     {{- end }}
+   ```
+
+---
+
+### Error: "yaml: line X: did not find expected key"
+
+**Symptom**: Resources not created, YAML parsing errors in logs.
+
+**Cause**: Template renders invalid YAML.
+
+**Solutions**:
+
+1. **Test Template Locally**:
+   ```bash
+   # Save template to file
+   cat > template.yaml << 'EOF'
+   apiVersion: v1
+   kind: ConfigMap
+   metadata:
+     name: test-{{ .Row.id }}
+   data:
+     value: {{ .Row.value }}
+   EOF
+   
+   # Test with sample data
+   echo '{"id": "123", "value": "test"}' | \
+     jq -r 'to_entries | map(.key + "=" + (.value | tostring)) | .[]' | \
+     ... # Use Go template engine
+   ```
+
+2. **Quote String Values**:
+   ```yaml
+   # Wrong
+   data:
+     value: {{ .Row.text }}
+   
+   # Right
+   data:
+     value: {{ .Row.text | quote }}
+   ```
+
+3. **Check for Special Characters**:
+   ```yaml
+   # Escape special YAML characters
+   data:
+     value: {{ .Row.text | quote }}
+     json: {{ .Row.data | toJson | quote }}
+   ```
+
+---
+
+## Resource Management Issues
+
+### Resources Not Created
+
+**Check DatabaseQueryResource Status**:
+```bash
+kubectl describe databasequeryresource my-dbqr -n my-namespace
+```
+
+**Common Causes**:
+
+1. **Query Returns No Rows**:
+   - Verify query in database directly
+   - Check WHERE clauses
+
+2. **Template Rendering Failed**:
+   - Check operator logs for template errors
+   - Validate template syntax
+
+3. **RBAC Permissions Missing**:
+   ```bash
+   # Check operator logs
+   kubectl logs -n dbqo-system deployment/db-query-operator | grep "forbidden"
+   ```
+   
+   **Solution**: Update operator RBAC or gvkPattern:
+   ```bash
+   helm upgrade db-query-operator ... \
+     --set gvkPattern="v1/ConfigMap;apps/v1/Deployment"
+   ```
+
+---
+
+### Resources Not Pruned
+
+**Symptom**: Resources remain after removing database rows.
+
+**Solutions**:
+
+1. **Enable Pruning**:
+   ```yaml
+   spec:
+     prune: true  # Default, but verify
+   ```
+
+2. **Check Owner References** (same-namespace only):
+   ```bash
+   kubectl get configmap my-resource -o yaml | grep -A5 ownerReferences
+   ```
+
+3. **Cross-Namespace Resources**:
+   Pruning for cross-namespace resources uses labels/tracking:
+   ```bash
+   # Check if resource is tracked
+   kubectl get configmap -n other-namespace my-resource -o yaml | grep "managed-by"
+   ```
+
+---
+
+### Resources Keep Reverting
+
+**Symptom**: Manual `kubectl edit` changes are reverted.
+
+**Cause**: Server-Side Apply - operator owns those fields.
+
+**Solutions**:
+
+1. **Update Database Instead**:
+   ```sql
+   UPDATE my_table SET value = 'new-value' WHERE id = 'my-resource';
+   ```
+
+2. **Change Non-Managed Fields** (safe):
+   ```bash
+   kubectl label configmap my-resource custom-label=value
+   kubectl annotate configmap my-resource custom-annotation=value
+   ```
+
+3. **Disable Operator for Resource**:
+   ```sql
+   -- Remove from query results temporarily
+   UPDATE my_table SET enabled = false WHERE id = 'my-resource';
+   ```
+
+---
+
+## Performance Issues
+
+### High Database Load
+
+**Symptoms**:
+- High CPU/memory on database
+- Slow query responses
+- Connection pool exhaustion
+
+**Solutions**:
+
+1. **Enable Change Detection**:
+   ```yaml
+   spec:
+     changeDetection:
+       enabled: true
+       tableName: "my_table"
+       timestampColumn: "updated_at"
+   ```
+
+2. **Increase Poll Interval**:
+   ```yaml
+   spec:
+     pollInterval: "5m"  # From 30s
+   ```
+
+3. **Optimize Query**:
+   ```sql
+   -- Add indexes
+   CREATE INDEX idx_enabled ON my_table(enabled) WHERE enabled = true;
+   CREATE INDEX idx_updated ON my_table(updated_at);
+   
+   -- Use indexed columns in WHERE
+   SELECT * FROM my_table WHERE enabled = true;
+   ```
+
+4. **Limit Result Set**:
+   ```sql
+   -- Only active records
+   SELECT * FROM my_table WHERE enabled = true;
+   
+   -- Recent changes only
+   SELECT * FROM my_table 
+   WHERE updated_at > NOW() - INTERVAL '24 hours';
+   ```
+
+---
+
+### Slow Resource Creation
+
+**Symptoms**:
+- Long reconciliation times
+- Resources appear slowly
+
+**Solutions**:
+
+1. **Simplify Template**:
+   ```yaml
+   # Avoid complex logic in templates
+   # Move logic to SQL query instead
+   ```
+
+2. **Check Network Latency**:
+   ```bash
+   kubectl run -it --rm debug --image=nicolaka/netshoot -- \
+     time curl -k https://kubernetes.default.svc
+   ```
+
+3. **Review Operator Logs**:
+   ```bash
+   kubectl logs -n dbqo-system deployment/db-query-operator -f
+   ```
+
+---
+
+## CRD and RBAC Issues
+
+### Error: "no matches for kind DatabaseQueryResource"
+
+**Cause**: CRD not installed.
+
+**Solution**:
+```bash
+# Check CRD
+kubectl get crd databasequeryresources.konnektr.io
+
+# Install/upgrade operator
+helm upgrade --install db-query-operator \
+  oci://ghcr.io/konnektr-io/charts/db-query-operator \
+  -n dbqo-system --create-namespace \
+  --set gvkPattern="v1/ConfigMap"
+```
+
+---
+
+### Error: "forbidden: User cannot create resource"
+
+**Symptom**:
+```
+Error: failed to apply resource: forbidden: User "system:serviceaccount:dbqo-system:db-query-operator" 
+cannot create resource "deployments" in API group "apps"
+```
+
+**Cause**: Operator ServiceAccount lacks RBAC permissions.
+
+**Solution**:
+
+1. **Add Resource Type to gvkPattern**:
+   ```bash
+   helm upgrade db-query-operator ... \
+     --set gvkPattern="v1/ConfigMap;apps/v1/Deployment"
+   ```
+
+2. **For Cross-Namespace Resources**, manually create ClusterRole:
+   ```yaml
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRole
+   metadata:
+     name: db-query-operator-cross-ns
+   rules:
+   - apiGroups: [""]
+     resources: ["configmaps"]
+     verbs: ["get", "list", "create", "update", "patch", "delete"]
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRoleBinding
+   metadata:
+     name: db-query-operator-cross-ns
+   roleRef:
+     apiGroup: rbac.authorization.k8s.io
+     kind: ClusterRole
+     name: db-query-operator-cross-ns
+   subjects:
+   - kind: ServiceAccount
+     name: db-query-operator
+     namespace: dbqo-system
+   ```
+
+---
+
+## Debugging Checklist
+
+When troubleshooting, check in order:
+
+1. **DatabaseQueryResource Status**:
+   ```bash
+   kubectl describe databasequeryresource <name> -n <namespace>
+   ```
+
+2. **Operator Logs**:
+   ```bash
+   kubectl logs -n dbqo-system deployment/db-query-operator --tail=100 -f
+   ```
+
+3. **Database Connectivity**:
+   ```bash
+   kubectl run -it --rm debug --image=postgres:15 -- \
+     psql "$(kubectl get secret <secret> -o jsonpath='{.data.fqdn-uri}' | base64 -d)"
+   ```
+
+4. **Query Results**:
+   ```sql
+   -- Run query directly in database
+   SELECT * FROM my_table;
+   ```
+
+5. **Template Rendering**:
+   - Copy template to local file
+   - Test with sample data
+   - Validate resulting YAML
+
+6. **Resource Creation**:
+   ```bash
+   kubectl get <resource-kind> -A -l managed-by=db-query-operator
+   ```
+
+7. **RBAC Permissions**:
+   ```bash
+   kubectl auth can-i create deployments \
+     --as=system:serviceaccount:dbqo-system:db-query-operator \
+     -n <target-namespace>
+   ```
+
+---
+
+## Getting Help
+
+### Logs to Collect
+
+```bash
+# Operator logs
+kubectl logs -n dbqo-system deployment/db-query-operator --tail=200 > operator.log
+
+# DBQR description
+kubectl describe databasequeryresource <name> -n <namespace> > dbqr.yaml
+
+# CRD definition
+kubectl get databasequeryresource <name> -n <namespace> -o yaml > dbqr-spec.yaml
+```
+
+### Information to Provide
+
+When reporting issues:
+
+1. Operator version (`helm list -n dbqo-system`)
+2. Kubernetes version (`kubectl version`)
+3. Database type and version
+4. Sanitized DBQR spec (remove credentials)
+5. Operator logs showing error
+6. Query results (sample)
+
+### Community Support
+
+- **GitHub Issues**: [github.com/konnektr-io/db-query-operator/issues](https://github.com/konnektr-io/db-query-operator/issues)
+- **Documentation**: [docs.konnektr.io/docs/db-query-operator](https://docs.konnektr.io/docs/db-query-operator)
+
+---
+
+## Frequently Asked Questions
+
+### Can I use multiple databases?
+
+Yes, create separate `DatabaseQueryResource` objects with different `connectionSecretRef`.
+
+### Does it support MySQL/MongoDB/etc?
+
+Currently PostgreSQL only. Other databases planned for future releases.
+
+### Can one DBQR create multiple resource types?
+
+No, one DBQR creates one resource type (GVK). Create multiple DBQRs for different types.
+
+### What happens if the database is down?
+
+The operator logs errors and retries on next `pollInterval`. Existing resources remain unchanged.
+
+### Can I use with read replicas?
+
+Yes, point connection secret to read replica host for read-only queries.
+
+### Does it support database transactions?
+
+No, each query auto-commits. Use database-level constraints for consistency.
+
+### Can templates call external APIs?
+
+No, templates are pure Go templates with Sprig functions. No network calls.
+
+### How do I rotate database credentials?
+
+Update the Secret referenced by `connectionSecretRef`. Operator will reconnect automatically on next reconciliation.
+
+---
+
+## Next Steps
+
+- Review [Examples](/docs/db-query-operator/examples) for working configurations
+- See [Advanced Topics](/docs/db-query-operator/advanced) for optimization strategies
+- Check [Configuration Reference](/docs/db-query-operator/configuration) for all options

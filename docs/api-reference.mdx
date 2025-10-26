@@ -1,0 +1,592 @@
+---
+title: API Reference
+description: Complete CRD API documentation
+---
+
+# API Reference
+
+Complete API documentation for the `DatabaseQueryResource` Custom Resource Definition.
+
+## Resource Definition
+
+```yaml
+apiVersion: konnektr.io/v1alpha1
+kind: DatabaseQueryResource
+metadata:
+  name: <resource-name>
+  namespace: <namespace>
+spec:
+  # ... see sections below
+```
+
+---
+
+## Spec Fields
+
+### pollInterval
+
+**Type**: `string`  
+**Required**: Yes  
+**Format**: Go duration (`"30s"`, `"5m"`, `"1h"`)
+
+How frequently to query the database and reconcile resources.
+
+```yaml
+spec:
+  pollInterval: "2m"
+```
+
+---
+
+### prune
+
+**Type**: `boolean`  
+**Required**: No  
+**Default**: `true`
+
+Whether to delete managed resources that no longer appear in query results.
+
+```yaml
+spec:
+  prune: true
+```
+
+**Behavior**:
+- `true`: Resources removed from database are deleted from Kubernetes
+- `false`: Resources persist even after database rows are deleted
+
+---
+
+### database
+
+**Type**: `object`  
+**Required**: Yes
+
+Database connection configuration.
+
+#### database.type
+
+**Type**: `string`  
+**Required**: Yes  
+**Allowed Values**: `postgres`
+
+Database type.
+
+```yaml
+spec:
+  database:
+    type: postgres
+```
+
+#### database.connectionSecretRef
+
+**Type**: `object`  
+**Required**: Yes
+
+Reference to a Secret containing database credentials.
+
+##### name
+
+**Type**: `string`  
+**Required**: Yes
+
+Name of the Secret.
+
+```yaml
+connectionSecretRef:
+  name: db-credentials
+```
+
+##### namespace
+
+**Type**: `string`  
+**Required**: No  
+**Default**: DatabaseQueryResource's namespace
+
+Namespace of the Secret.
+
+```yaml
+connectionSecretRef:
+  name: db-credentials
+  namespace: database-ns
+```
+
+##### uriKey
+
+**Type**: `string`  
+**Required**: No  
+**Default**: Not used
+
+Secret key containing a full PostgreSQL URI.
+
+```yaml
+connectionSecretRef:
+  name: cnpg-cluster-app
+  uriKey: fqdn-uri  # CloudNativePG provides this
+```
+
+**Format**: `postgresql://user:password@host:port/database?sslmode=require`
+
+**Note**: If `uriKey` is specified, individual connection fields (host, port, etc.) are ignored.
+
+##### hostKey
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `"host"`
+
+Secret key containing database hostname.
+
+```yaml
+connectionSecretRef:
+  hostKey: pghost
+```
+
+##### portKey
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `"port"`
+
+Secret key containing database port.
+
+```yaml
+connectionSecretRef:
+  portKey: pgport
+```
+
+##### usernameKey
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `"username"`
+
+Secret key containing database username.
+
+```yaml
+connectionSecretRef:
+  usernameKey: user
+```
+
+##### passwordKey
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `"password"`
+
+Secret key containing database password.
+
+```yaml
+connectionSecretRef:
+  passwordKey: pass
+```
+
+##### databaseKey
+
+**Type**: `string`  
+**Required**: No  
+**Default**: `"database"`
+
+Secret key containing database name.
+
+```yaml
+connectionSecretRef:
+  databaseKey: dbname
+```
+
+---
+
+### query
+
+**Type**: `string` (multi-line)  
+**Required**: Yes
+
+SQL query to execute. Must return at least one row. Each row becomes one Kubernetes resource.
+
+```yaml
+spec:
+  query: |
+    SELECT id, name, config
+    FROM my_table
+    WHERE enabled = true
+```
+
+**Multi-Statement Support** (v0.6.0+):
+```yaml
+spec:
+  query: |
+    SET statement_timeout = '30s';
+    SET search_path = myschema, public;
+    
+    SELECT id, name, data
+    FROM my_table
+    WHERE enabled = true;
+```
+
+The operator executes all statements, returning results from the last one.
+
+---
+
+### gvk
+
+**Type**: `object`  
+**Required**: Yes
+
+GroupVersionKind of resources to create.
+
+#### group
+
+**Type**: `string`  
+**Required**: Yes  
+**Default**: `""` for core resources
+
+API group.
+
+```yaml
+gvk:
+  group: ""  # Core resources (ConfigMap, Secret, Service)
+```
+
+```yaml
+gvk:
+  group: "apps"  # apps/v1 resources
+```
+
+```yaml
+gvk:
+  group: "argoproj.io"  # Custom resources
+```
+
+#### version
+
+**Type**: `string`  
+**Required**: Yes
+
+API version.
+
+```yaml
+gvk:
+  version: "v1"
+```
+
+#### kind
+
+**Type**: `string`  
+**Required**: Yes
+
+Resource kind.
+
+```yaml
+gvk:
+  kind: "ConfigMap"
+```
+
+```yaml
+gvk:
+  kind: "Deployment"
+```
+
+**Important**: The operator must have RBAC permissions for the specified GVK. Configure via `gvkPattern` during Helm installation.
+
+---
+
+### resourceTemplate
+
+**Type**: `string` (multi-line Go template)  
+**Required**: Yes
+
+Go template for rendering Kubernetes resources from query rows.
+
+```yaml
+spec:
+  resourceTemplate: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: {{ .Row.id }}
+      namespace: {{ .Metadata.Namespace }}
+    data:
+      value: {{ .Row.value | quote }}
+```
+
+**Template Context**:
+
+- `.Row`: Map of query result columns for current row
+- `.Metadata`: DatabaseQueryResource metadata
+
+**Template Functions**:
+
+All [Sprig functions](http://masterminds.github.io/sprig/) plus:
+- `toJson`: Convert to JSON string
+- `fromJson`: Parse JSON string
+- `toYaml`: Convert to YAML string
+- `fromYaml`: Parse YAML string
+
+---
+
+### statusUpdateQuery
+
+**Type**: `string` (multi-line SQL)  
+**Required**: No
+
+SQL query to execute after managing each resource, typically to update database with resource status.
+
+```yaml
+spec:
+  statusUpdateQuery: |
+    UPDATE my_table
+    SET ready_replicas = {{ .Status.readyReplicas | default 0 }},
+        last_updated = NOW()
+    WHERE id = {{ .Metadata.Name | squote }}
+```
+
+**Template Context**:
+
+- `.Metadata`: Managed resource metadata (name, namespace, labels, annotations)
+- `.Status`: Managed resource status
+- `.Spec`: Managed resource spec
+
+**Template Functions**:
+
+- `squote`: SQL single-quote escape
+- All Sprig functions
+
+**Error Handling**: Failures are logged but don't prevent resource creation.
+
+---
+
+### changeDetection
+
+**Type**: `object`  
+**Required**: No
+
+Configuration for change detection optimization.
+
+#### enabled
+
+**Type**: `boolean`  
+**Required**: No  
+**Default**: `false`
+
+Enable change detection.
+
+```yaml
+spec:
+  changeDetection:
+    enabled: true
+```
+
+#### tableName
+
+**Type**: `string`  
+**Required**: If `enabled: true`
+
+Table name to query for changes.
+
+```yaml
+spec:
+  changeDetection:
+    tableName: "my_table"
+```
+
+#### timestampColumn
+
+**Type**: `string`  
+**Required**: If `enabled: true`
+
+Column name containing timestamp of last change.
+
+```yaml
+spec:
+  changeDetection:
+    timestampColumn: "updated_at"
+```
+
+**How It Works**:
+1. On each poll, query `SELECT MAX(timestampColumn) FROM tableName`
+2. If timestamp unchanged since last poll, skip main query
+3. If timestamp changed, execute main query and reconcile
+
+**Requirements**:
+- Table must have a timestamp column
+- Column must update whenever data changes (use triggers)
+- Column must be indexed for performance
+
+---
+
+## Complete Example
+
+```yaml
+apiVersion: konnektr.io/v1alpha1
+kind: DatabaseQueryResource
+metadata:
+  name: tenant-deployments
+  namespace: platform
+  labels:
+    app.kubernetes.io/name: tenant-deployments
+    app.kubernetes.io/part-of: multi-tenant-platform
+spec:
+  # Poll every 2 minutes
+  pollInterval: "2m"
+  
+  # Delete resources when rows are removed
+  prune: true
+  
+  # Database connection
+  database:
+    type: postgres
+    connectionSecretRef:
+      name: platform-postgres-app
+      namespace: databases
+      uriKey: fqdn-uri  # CloudNativePG secret
+  
+  # Change detection for efficiency
+  changeDetection:
+    enabled: true
+    tableName: "tenants"
+    timestampColumn: "updated_at"
+  
+  # Query for active tenants
+  query: |
+    SELECT 
+      tenant_id,
+      app_image,
+      replicas,
+      env_vars::text as env_json
+    FROM tenants
+    WHERE enabled = true
+    ORDER BY tenant_id
+  
+  # Create Deployments
+  gvk:
+    group: "apps"
+    version: "v1"
+    kind: "Deployment"
+  
+  # Deployment template
+  resourceTemplate: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: tenant-{{ .Row.tenant_id }}
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        tenant: {{ .Row.tenant_id | quote }}
+        managed-by: db-query-operator
+    spec:
+      replicas: {{ .Row.replicas }}
+      selector:
+        matchLabels:
+          app: tenant-{{ .Row.tenant_id }}
+      template:
+        metadata:
+          labels:
+            app: tenant-{{ .Row.tenant_id }}
+            tenant: {{ .Row.tenant_id | quote }}
+        spec:
+          containers:
+          - name: app
+            image: {{ .Row.app_image | quote }}
+            ports:
+            - containerPort: 8080
+            env:
+            {{- range $key, $value := (.Row.env_json | fromJson) }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+  
+  # Sync status back to database
+  statusUpdateQuery: |
+    UPDATE tenants
+    SET 
+      ready_replicas = {{ .Status.readyReplicas | default 0 }},
+      available_replicas = {{ .Status.availableReplicas | default 0 }},
+      last_synced = NOW()
+    WHERE tenant_id = {{ .Metadata.Name | replace "tenant-" "" | squote }}
+```
+
+---
+
+## Status Subresource
+
+**Note**: Status subresource is not currently implemented but planned for future releases.
+
+**Planned Fields**:
+
+```yaml
+status:
+  conditions:
+  - type: Ready
+    status: "True"
+    lastTransitionTime: "2024-01-15T10:00:00Z"
+    reason: ReconcileSuccess
+    message: "Successfully reconciled 15 resources"
+  - type: DatabaseConnected
+    status: "True"
+    lastTransitionTime: "2024-01-15T09:00:00Z"
+  observedGeneration: 5
+  lastReconcileTime: "2024-01-15T10:30:00Z"
+  managedResourceCount: 15
+  lastQueryDuration: "142ms"
+```
+
+---
+
+## RBAC Requirements
+
+The operator ServiceAccount must have permissions for managed resource types.
+
+**Example ClusterRole**:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: db-query-operator
+rules:
+# DatabaseQueryResource CRD
+- apiGroups: ["konnektr.io"]
+  resources: ["databasequeryresources"]
+  verbs: ["get", "list", "watch"]
+
+# Managed resources (configured via gvkPattern)
+- apiGroups: [""]
+  resources: ["configmaps", "secrets", "services"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+
+- apiGroups: ["argoproj.io"]
+  resources: ["applications"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+```
+
+**Configure during installation**:
+
+```bash
+helm install db-query-operator ... \
+  --set gvkPattern="v1/ConfigMap;apps/v1/Deployment;argoproj.io/v1alpha1/Application"
+```
+
+---
+
+## Validation Rules
+
+The CRD includes validation rules:
+
+- `pollInterval`: Must be valid Go duration format
+- `database.type`: Must be `"postgres"`
+- `gvk`: All fields required
+- `query`: Must not be empty
+- `resourceTemplate`: Must not be empty
+- `changeDetection`: If `enabled: true`, `tableName` and `timestampColumn` required
+
+---
+
+## Next Steps
+
+- See [Examples](/docs/db-query-operator/examples) for practical use cases
+- Review [Configuration Reference](/docs/db-query-operator/configuration) for detailed field descriptions
+- Check [Troubleshooting](/docs/db-query-operator/troubleshooting) for common issues

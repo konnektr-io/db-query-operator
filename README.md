@@ -3,11 +3,26 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Build Status](https://github.com/konnektr-io/db-query-operator/actions/workflows/build-push.yaml/badge.svg)](https://github.com/konnektr-io/db-query-operator/actions/workflows/build-push.yaml)
 
+> **📚 Full Documentation**: For comprehensive documentation, guides, and examples, visit [docs.konnektr.io/docs/db-query-operator](https://docs.konnektr.io/docs/db-query-operator)
+
 ## Overview
 
 The Database Query Operator is a Kubernetes operator designed to manage Kubernetes resources based on the results of a database query. It periodically polls a specified database (currently PostgreSQL), executes a user-defined SQL query, and uses a Go template to render Kubernetes manifests for each row returned by the query.
 
 The operator handles the reconciliation loop, ensuring that the resources in the cluster match the desired state defined by the database query results and the template. This allows for dynamic configuration and resource management driven directly by your application's database state.
+
+## Quick Start
+
+Install via Helm:
+
+```bash
+helm install db-query-operator \
+  oci://ghcr.io/konnektr-io/charts/db-query-operator \
+  --namespace dbqo-system \
+  --create-namespace
+```
+
+For detailed installation instructions and configuration options, see the [Installation Guide](https://docs.konnektr.io/docs/db-query-operator/installation).
 
 ## Features
 

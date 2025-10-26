@@ -1,0 +1,325 @@
+---
+title: Getting Started
+description: Quick guide to installing and using the Database Query Operator
+---
+
+# Getting Started
+
+This guide will walk you through installing the DB Query Operator and creating your first DatabaseQueryResource.
+
+## Prerequisites
+
+Before you begin, ensure you have:
+
+- **Kubernetes cluster** (v1.24+) - kind, minikube, EKS, GKE, AKS, or any Kubernetes distribution
+- **kubectl** configured to access your cluster
+- **Helm 3** installed
+- **PostgreSQL database** accessible from your Kubernetes cluster
+
+## Step 1: Install the Operator
+
+### Option A: Install via OCI Registry (Recommended)
+
+```bash
+helm install db-query-operator \
+  oci://ghcr.io/konnektr-io/charts/db-query-operator \
+  --version 0.6.0 \
+  --namespace dbqo-system \
+  --create-namespace \
+  --set gvkPattern="v1/ConfigMap;apps/v1/Deployment"
+```
+
+### Option B: Install via Helm Repository
+
+```bash
+# Add the Konnektr Helm repository
+helm repo add konnektr https://charts.konnektr.io
+helm repo update
+
+# Install the operator
+helm install db-query-operator konnektr/db-query-operator \
+  --namespace dbqo-system \
+  --create-namespace \
+  --set gvkPattern="v1/ConfigMap;apps/v1/Deployment"
+```
+
+### Understanding `gvkPattern`
+
+The `gvkPattern` parameter specifies which Kubernetes resource types the operator can manage. Format: `group/version/Kind` or `version/Kind` for core resources.
+
+Examples:
+- `v1/ConfigMap` - Core ConfigMaps
+- `apps/v1/Deployment` - Deployments
+- `argoproj.io/v1alpha1/Application` - ArgoCD Applications
+- `postgresql.cnpg.io/v1/Cluster` - CloudNativePG clusters
+
+Use semicolons to separate multiple types:
+```bash
+--set gvkPattern="v1/ConfigMap;v1/Secret;apps/v1/Deployment;argoproj.io/v1alpha1/Application"
+```
+
+## Step 2: Verify Installation
+
+Check that the operator pod is running:
+
+```bash
+kubectl get pods -n dbqo-system
+
+# Expected output:
+# NAME                                    READY   STATUS    RESTARTS   AGE
+# db-query-operator-xxxxx-xxxxx           1/1     Running   0          1m
+```
+
+View operator logs:
+
+```bash
+kubectl logs -n dbqo-system -l app.kubernetes.io/name=db-query-operator -f
+```
+
+## Step 3: Prepare Your Database
+
+Create a test table in your PostgreSQL database:
+
+```sql
+CREATE TABLE app_configs (
+    id SERIAL PRIMARY KEY,
+    app_name VARCHAR(50) NOT NULL,
+    environment VARCHAR(20) NOT NULL,
+    replicas INT DEFAULT 1,
+    config_data JSONB,
+    active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Insert sample data
+INSERT INTO app_configs (app_name, environment, replicas, config_data) VALUES
+  ('frontend', 'production', 3, '{"version": "1.0.0"}'),
+  ('backend', 'production', 2, '{"version": "2.1.0"}'),
+  ('worker', 'staging', 1, '{"version": "1.5.0"}');
+```
+
+## Step 4: Create Database Connection Secret
+
+Create a Kubernetes Secret with your database credentials:
+
+```yaml title="db-credentials.yaml"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+  namespace: default
+type: Opaque
+stringData:
+  host: "postgres.database.svc.cluster.local"
+  port: "5432"
+  username: "myuser"
+  password: "mypassword"
+  dbname: "mydb"
+  sslmode: "prefer"
+```
+
+Apply the secret:
+
+```bash
+kubectl apply -f db-credentials.yaml
+```
+
+### Using CloudNativePG Secrets
+
+If you're using CloudNativePG, you can reference the auto-generated secrets directly:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-postgres-app
+  namespace: database-ns
+# CNPG automatically populates this secret with:
+# - fqdn-uri: postgresql://user:pass@host.namespace.svc.cluster.local:5432/db
+# - host, port, username, password, dbname
+```
+
+## Step 5: Create Your First DatabaseQueryResource
+
+Create a file `my-first-dbqr.yaml`:
+
+```yaml title="my-first-dbqr.yaml"
+apiVersion: konnektr.io/v1alpha1
+kind: DatabaseQueryResource
+metadata:
+  name: app-configs
+  namespace: default
+spec:
+  # Query the database every minute
+  pollInterval: "1m"
+  
+  # Automatically remove resources when rows are deleted
+  prune: true
+  
+  # Database connection
+  database:
+    type: postgres
+    connectionSecretRef:
+      name: db-credentials
+      # namespace: database-ns  # Optional: if secret is in different namespace
+  
+  # SQL query - each row becomes one resource
+  query: |
+    SELECT 
+      app_name,
+      environment,
+      replicas,
+      config_data->>'version' as version
+    FROM app_configs
+    WHERE active = true;
+  
+  # Go template to generate Kubernetes resources
+  template: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: {{ .Row.app_name }}-{{ .Row.environment }}-config
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        app: {{ .Row.app_name }}
+        environment: {{ .Row.environment }}
+    data:
+      app_name: "{{ .Row.app_name }}"
+      environment: "{{ .Row.environment }}"
+      replicas: "{{ .Row.replicas }}"
+      version: "{{ .Row.version }}"
+```
+
+Apply the resource:
+
+```bash
+kubectl apply -f my-first-dbqr.yaml
+```
+
+## Step 6: Verify the Results
+
+Check the status of your DatabaseQueryResource:
+
+```bash
+kubectl get databasequeryresource app-configs -o yaml
+```
+
+Look for the status section:
+
+```yaml
+status:
+  conditions:
+    - type: DBConnected
+      status: "True"
+      message: "Successfully connected to the database"
+    - type: Reconciled
+      status: "True"
+      message: "Successfully queried DB and reconciled resources"
+  lastPollTime: "2025-10-26T14:30:00Z"
+  managedResources:
+    - v1/default/frontend-production-config
+    - v1/default/backend-production-config
+    - v1/default/worker-staging-config
+```
+
+View the created ConfigMaps:
+
+```bash
+# List managed ConfigMaps
+kubectl get configmaps -l konnektr.io/managed-by=app-configs
+
+# View a specific ConfigMap
+kubectl get configmap frontend-production-config -o yaml
+```
+
+## What Happens Next?
+
+The operator will:
+
+1. **Poll the database** every `pollInterval` (1 minute in this example)
+2. **Execute the query** and get current rows
+3. **Render templates** for each row using Go templating
+4. **Apply resources** to the cluster using Server-Side Apply
+5. **Prune stale resources** if rows are removed from the database
+6. **Update status** with reconciliation results
+
+## Testing Changes
+
+### Add a New Row
+
+Add a new row to your database:
+
+```sql
+INSERT INTO app_configs (app_name, environment, replicas, config_data) 
+VALUES ('api', 'production', 2, '{"version": "3.0.0"}');
+```
+
+Wait up to 1 minute (your `pollInterval`), then check for the new ConfigMap:
+
+```bash
+kubectl get configmap api-production-config
+```
+
+### Modify a Row
+
+Update a row:
+
+```sql
+UPDATE app_configs 
+SET replicas = 5, config_data = '{"version": "1.1.0"}'
+WHERE app_name = 'frontend' AND environment = 'production';
+```
+
+The operator will update the corresponding ConfigMap on the next poll.
+
+### Delete a Row
+
+Delete a row (with pruning enabled):
+
+```sql
+DELETE FROM app_configs 
+WHERE app_name = 'worker' AND environment = 'staging';
+```
+
+The operator will delete the corresponding ConfigMap.
+
+## Next Steps
+
+<Cards>
+  <Card title="Core Concepts" href="/docs/db-query-operator/core-concepts">
+    Learn about reconciliation loops, templates, and pruning
+  </Card>
+  
+  <Card title="Configuration" href="/docs/db-query-operator/configuration">
+    Explore all configuration options and CRD fields
+  </Card>
+  
+  <Card title="Examples" href="/docs/db-query-operator/examples">
+    See real-world examples including ArgoCD Applications and more
+  </Card>
+  
+  <Card title="Advanced Topics" href="/docs/db-query-operator/advanced">
+    Learn about change detection, status updates, and cross-namespace resources
+  </Card>
+</Cards>
+
+## Troubleshooting
+
+If you encounter issues:
+
+1. **Check operator logs**:
+   ```bash
+   kubectl logs -n dbqo-system -l app.kubernetes.io/name=db-query-operator
+   ```
+
+2. **Check DatabaseQueryResource status**:
+   ```bash
+   kubectl describe databasequeryresource app-configs
+   ```
+
+3. **Verify database connectivity**:
+   - Ensure the secret has correct credentials
+   - Check network policies allow operator → database traffic
+   - Verify database host is resolvable from the cluster
+
+See the [Troubleshooting Guide](/docs/db-query-operator/troubleshooting) for more help.
