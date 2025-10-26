@@ -26,12 +26,12 @@ func (p *PostgresDatabaseClient) Connect(ctx context.Context, config map[string]
 func (p *PostgresDatabaseClient) Query(ctx context.Context, query string) ([]RowResult, []string, error) {
 	// Split query into multiple statements if separated by semicolons
 	statements := splitStatements(query)
-	
+
 	// If there's only one statement, execute it directly
 	if len(statements) == 1 {
 		return p.executeSingleQuery(ctx, statements[0])
 	}
-	
+
 	// Multiple statements: use batch for all but the last, then query the last one
 	if len(statements) > 1 {
 		batch := &pgx.Batch{}
@@ -39,7 +39,7 @@ func (p *PostgresDatabaseClient) Query(ctx context.Context, query string) ([]Row
 		for i := 0; i < len(statements)-1; i++ {
 			batch.Queue(statements[i])
 		}
-		
+
 		// Execute the batch (setup commands like LOAD, SET)
 		batchResults := p.conn.SendBatch(ctx, batch)
 		// Close the batch results to ensure all commands are executed
@@ -47,11 +47,11 @@ func (p *PostgresDatabaseClient) Query(ctx context.Context, query string) ([]Row
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to execute batch commands: %w", err)
 		}
-		
+
 		// Execute the final statement (the actual query that returns data)
 		return p.executeSingleQuery(ctx, statements[len(statements)-1])
 	}
-	
+
 	return nil, nil, fmt.Errorf("no statements to execute")
 }
 
@@ -95,11 +95,11 @@ func splitStatements(query string) []string {
 	inDoubleQuote := false
 	inDollarQuote := false
 	dollarTag := ""
-	
+
 	runes := []rune(query)
 	for i := 0; i < len(runes); i++ {
 		ch := runes[i]
-		
+
 		// Handle dollar-quoted strings (e.g., $$...$$ or $tag$...$tag$)
 		if ch == '$' && !inSingleQuote && !inDoubleQuote {
 			// Check if this starts a dollar quote
@@ -126,21 +126,21 @@ func splitStatements(query string) []string {
 				}
 			}
 		}
-		
+
 		// Handle single quotes
 		if ch == '\'' && !inDoubleQuote && !inDollarQuote {
 			inSingleQuote = !inSingleQuote
 			current.WriteRune(ch)
 			continue
 		}
-		
+
 		// Handle double quotes
 		if ch == '"' && !inSingleQuote && !inDollarQuote {
 			inDoubleQuote = !inDoubleQuote
 			current.WriteRune(ch)
 			continue
 		}
-		
+
 		// Handle semicolon (statement separator)
 		if ch == ';' && !inSingleQuote && !inDoubleQuote && !inDollarQuote {
 			stmt := strings.TrimSpace(current.String())
@@ -150,16 +150,16 @@ func splitStatements(query string) []string {
 			current.Reset()
 			continue
 		}
-		
+
 		current.WriteRune(ch)
 	}
-	
+
 	// Add the last statement if there's anything left
 	stmt := strings.TrimSpace(current.String())
 	if stmt != "" {
 		statements = append(statements, stmt)
 	}
-	
+
 	return statements
 }
 
