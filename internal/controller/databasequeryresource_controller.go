@@ -633,12 +633,10 @@ func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Contex
 	for k := range currentKeys {
 		currentKeysList = append(currentKeysList, k)
 	}
-	log.Info("DEBUG: Pruning comparison", "currentKeys", currentKeysList, "allChildrenCount", len(allChildren))
 	
 	for _, item := range allChildren {
 		objKey := getObjectKey(item)
-		log.Info("DEBUG: Checking child resource", "objectKey", objKey, "GVK", item.GroupVersionKind(), "Name", item.GetName(), "Namespace", item.GetNamespace())
-		
+
 		if _, exists := currentKeys[objKey]; !exists {
 			log.Info("Pruning stale resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName(), "objectKey", objKey)
 			if err := r.Delete(ctx, item); err != nil {
@@ -651,8 +649,6 @@ func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Contex
 			} else {
 				log.Info("Successfully pruned resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
 			}
-		} else {
-			log.Info("DEBUG: Resource is current, not pruning", "objectKey", objKey, "GVK", item.GroupVersionKind(), "Name", item.GetName())
 		}
 	}
 	return errors
