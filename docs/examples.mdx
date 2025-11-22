@@ -47,12 +47,7 @@ spec:
     FROM tenants
     WHERE enabled = true
   
-  gvk:
-    group: ""
-    version: "v1"
-    kind: "ConfigMap"
-  
-  resourceTemplate: |
+  template: |
     apiVersion: v1
     kind: ConfigMap
     metadata:
@@ -116,12 +111,7 @@ spec:
     FROM applications
     WHERE created_at IS NOT NULL
   
-  gvk:
-    group: "argoproj.io"
-    version: "v1alpha1"
-    kind: "Application"
-  
-  resourceTemplate: |
+  template: |
     apiVersion: argoproj.io/v1alpha1
     kind: Application
     metadata:
@@ -190,12 +180,7 @@ spec:
     SELECT service_name, image, replicas, port, env_vars, namespace
     FROM services
   
-  gvk:
-    group: "apps"
-    version: "v1"
-    kind: "Deployment"
-  
-  resourceTemplate: |
+  template: |
     apiVersion: apps/v1
     kind: Deployment
     metadata:
@@ -262,13 +247,8 @@ spec:
   query: |
     SELECT deployment_name, image, namespace
     FROM deployments
-  
-  gvk:
-    group: "apps"
-    version: "v1"
-    kind: "Deployment"
-  
-  resourceTemplate: |
+
+  template: |
     apiVersion: apps/v1
     kind: Deployment
     metadata:
@@ -289,7 +269,7 @@ spec:
             image: {{ .Row.image | quote }}
   
   # Update database with current ready replicas
-  statusUpdateQuery: |
+  statusUpdateQueryTemplate: |
     UPDATE deployments
     SET ready_replicas = {{ .Status.readyReplicas | default 0 }},
         last_updated = NOW()
@@ -356,12 +336,7 @@ spec:
     SELECT config_id, data
     FROM configs
   
-  gvk:
-    group: ""
-    version: "v1"
-    kind: "ConfigMap"
-  
-  resourceTemplate: |
+  template: |
     apiVersion: v1
     kind: ConfigMap
     metadata:
@@ -399,12 +374,7 @@ spec:
     FROM shared_secrets
     WHERE enabled = true
   
-  gvk:
-    group: ""
-    version: "v1"
-    kind: "Secret"
-  
-  resourceTemplate: |
+  template: |
     apiVersion: v1
     kind: Secret
     metadata:
