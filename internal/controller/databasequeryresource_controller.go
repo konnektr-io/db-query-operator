@@ -457,7 +457,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	// Collect managed resources for status update (cross-namespace)
 	var managedChildren []*unstructured.Unstructured
 	for _, resID := range dbqr.Status.ManagedResources {
-		// Format: group/version/namespace/name
+		// Format: group/version/kind/namespace/name
 		parts := strings.Split(resID, "/")
 		if len(parts) < 5 {
 			log.Info("Skipping invalid managedResource entry", "entry", resID)
@@ -769,7 +769,7 @@ func getObjectKey(obj client.Object) string {
 	kind := gvk.Kind
 	ns := obj.GetNamespace()
 	name := obj.GetName()
-	// Correct order: group/version/kind/namespace/name
+	// Format: group/version/kind/namespace/name
 	key := fmt.Sprintf("%s/%s/%s/%s/%s", gvk.Group, gvk.Version, kind, ns, name)
 	log := log.Log.WithValues("func", "getObjectKey")
 	log.Info("Constructed managed resource key", "key", key, "group", gvk.Group, "version", gvk.Version, "kind", kind, "namespace", ns, "name", name)
