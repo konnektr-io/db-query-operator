@@ -19,7 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -342,7 +341,6 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, nil // Invalid template, don't requeue based on interval
 	}
 
-
 	for _, rowData := range results {
 		// Render the template
 		var renderedManifest bytes.Buffer
@@ -434,15 +432,15 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		managedResourceKeys[resourceKey] = true
 	}
 
-	// Collect all child resources, then prune if enabled
+	// Collect all child resources for pruning (same-namespace only)
 	var pruneErrors []string
 	allChildResources, err := r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
 	if err != nil {
 		log.Error(err, "Failed to collect child resources")
 	}
-	log.Info("Collected child resources for status update", "count", len(allChildResources))
+	log.Info("Collected child resources for pruning", "count", len(allChildResources))
 	for _, obj := range allChildResources {
-		log.Info("Collected child resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+		log.Info("Collected child resource for pruning", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 	}
 	if dbqr.Spec.GetPrune() {
 		log.Info("Pruning enabled, checking for stale resources")
@@ -456,8 +454,37 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		log.Info("Pruning disabled")
 	}
 
+	// Collect managed resources for status update (cross-namespace)
+	var managedChildren []*unstructured.Unstructured
+	for _, resID := range dbqr.Status.ManagedResources {
+		// Format: group/version/kind/namespace/name
+		parts := strings.Split(resID, "/")
+		if len(parts) < 5 {
+			log.Info("Skipping invalid managedResource entry", "entry", resID)
+			continue
+		}
+		group := parts[0]
+		version := parts[1]
+		kind := parts[2]
+		namespace := parts[3]
+		name := parts[4]
+		gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: kind}
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(gvk)
+		err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, obj)
+		if err != nil {
+			log.Error(err, "Failed to fetch managed child resource for status update", "GVK", gvk, "Namespace", namespace, "Name", name)
+			continue
+		}
+		managedChildren = append(managedChildren, obj)
+	}
+	log.Info("Collected managed child resources for status update", "count", len(managedChildren))
+	for _, obj := range managedChildren {
+		log.Info("Managed child resource for status update", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+	}
+
 	// Check for child resource state changes and update status if needed
-	r.updateStatusForChildResources(ctx, dbqr, allChildResources, dbConfig)
+	r.updateStatusForChildResources(ctx, dbqr, managedChildren, dbConfig)
 
 	// Update Status
 	finalErrors := append(rowProcessingErrors, pruneErrors...)
@@ -658,43 +685,38 @@ func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Contex
 func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, ownedGVKs []schema.GroupVersionKind) ([]*unstructured.Unstructured, error) {
 	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
 	var allChildren []*unstructured.Unstructured
-	selector := labels.SelectorFromSet(labels.Set{
-		ManagedByLabel: dbqr.Name,
-	})
-	for _, gvk := range ownedGVKs {
-		list := &unstructured.UnstructuredList{}
-		list.SetGroupVersionKind(gvk)
-
-		// Check if this resource type is cluster-scoped
-		mapping, err := r.RESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version)
-		if err != nil {
-			log.Error(err, "Failed to get REST mapping for collection", "GVK", gvk)
-			continue
-		}
-
-		// Use appropriate list options based on scope
-		var listOptions []client.ListOption
-		listOptions = append(listOptions, client.MatchingLabelsSelector{Selector: selector})
-
-		if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
-			// Namespaced resource - limit to DBQR namespace
-			listOptions = append(listOptions, client.InNamespace(dbqr.Namespace))
-		}
-		// For cluster-scoped resources, don't add namespace limitation
-
-		err = r.List(ctx, list, listOptions...)
-		if err != nil {
-			if meta.IsNoMatchError(err) || runtime.IsNotRegisteredError(err) {
-				log.V(1).Info("Skipping GVK for collection, not registered in scheme", "GVK", gvk)
+	for _, resID := range dbqr.Status.ManagedResources {
+		// Expect format: group/version/kind/namespace/name (namespaced) or group/version/kind//name (cluster-scoped)
+		parts := strings.Split(resID, "/")
+		if len(parts) == 5 {
+			group := parts[0]
+			version := parts[1]
+			kind := parts[2]
+			namespace := parts[3]
+			name := parts[4]
+			log.Info("Parsing managed resource key (prune/collect)", "resID", resID, "group", group, "version", version, "kind", kind, "namespace", namespace, "name", name)
+			if kind == "" || name == "" {
+				log.Info("Skipping managedResource entry with missing kind or name", "entry", resID)
 				continue
 			}
-			log.Error(err, "Failed to list resources for collection", "GVK", gvk)
-			return nil, err
-		}
-		log.Info("Found candidates for collection", "GVK", gvk, "Count", len(list.Items))
-		for i := range list.Items {
-			item := &list.Items[i]
-			allChildren = append(allChildren, item)
+			gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: kind}
+			obj := &unstructured.Unstructured{}
+			obj.SetGroupVersionKind(gvk)
+			obj.SetKind(kind) // Ensure kind is set for status update templates
+			var key client.ObjectKey
+			if namespace != "" {
+				key = client.ObjectKey{Namespace: namespace, Name: name}
+			} else {
+				key = client.ObjectKey{Name: name}
+			}
+			err := r.Get(ctx, key, obj)
+			if err != nil {
+				log.Error(err, "Failed to fetch managed child resource", "GVK", gvk, "Namespace", namespace, "Name", name)
+				continue
+			}
+			allChildren = append(allChildren, obj)
+		} else {
+			log.Info("Skipping invalid managedResource entry (wrong part count)", "entry", resID, "parts", len(parts))
 		}
 	}
 	return allChildren, nil
@@ -744,7 +766,14 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 // getObjectKey creates a unique string identifier for a Kubernetes object.
 func getObjectKey(obj client.Object) string {
 	gvk := obj.GetObjectKind().GroupVersionKind()
-	return fmt.Sprintf("%s/%s/%s/%s", gvk.Group, gvk.Version, obj.GetNamespace(), obj.GetName())
+	kind := gvk.Kind
+	ns := obj.GetNamespace()
+	name := obj.GetName()
+	// Format: group/version/kind/namespace/name
+	key := fmt.Sprintf("%s/%s/%s/%s/%s", gvk.Group, gvk.Version, kind, ns, name)
+	log := log.Log.WithValues("func", "getObjectKey")
+	log.Info("Constructed managed resource key", "key", key, "group", gvk.Group, "version", gvk.Version, "kind", kind, "namespace", ns, "name", name)
+	return key
 }
 
 // setCondition updates the status condition for the CR.
@@ -789,6 +818,7 @@ func (r *DatabaseQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manag
 	return controllerBuilder.Complete(r)
 }
 
+// statusChangePredicate returns a predicate that always triggers on update and create, but not on delete or generic events.
 func statusChangePredicate() predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
@@ -898,7 +928,7 @@ func (r *DatabaseQueryResourceReconciler) shouldReconcile(
 	return false, changePollInterval
 }
 
-// detectChanges runs the change detection query
+// detectChanges runs the change detection query (on the database)
 func (r *DatabaseQueryResourceReconciler) detectChanges(
 	ctx context.Context,
 	dbqr *databasev1alpha1.DatabaseQueryResource,
