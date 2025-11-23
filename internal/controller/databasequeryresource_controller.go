@@ -19,7 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -434,15 +433,15 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		managedResourceKeys[resourceKey] = true
 	}
 
-	// Collect all child resources, then prune if enabled
+	// Collect all child resources for pruning (same-namespace only)
 	var pruneErrors []string
 	allChildResources, err := r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
 	if err != nil {
 		log.Error(err, "Failed to collect child resources")
 	}
-	log.Info("Collected child resources for status update", "count", len(allChildResources))
+	log.Info("Collected child resources for pruning", "count", len(allChildResources))
 	for _, obj := range allChildResources {
-		log.Info("Collected child resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+		log.Info("Collected child resource for pruning", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 	}
 	if dbqr.Spec.GetPrune() {
 		log.Info("Pruning enabled, checking for stale resources")
@@ -456,8 +455,37 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		log.Info("Pruning disabled")
 	}
 
+	// Collect managed resources for status update (cross-namespace)
+	var managedChildren []*unstructured.Unstructured
+	for _, resID := range dbqr.Status.ManagedResources {
+		// Format: group/version/namespace/name
+		parts := strings.Split(resID, "/")
+		if len(parts) < 5 {
+			log.Info("Skipping invalid managedResource entry", "entry", resID)
+			continue
+		}
+		group := parts[0]
+		version := parts[1]
+		namespace := parts[2]
+		name := parts[3]
+		kind := parts[4]
+		gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: kind}
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(gvk)
+		err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, obj)
+		if err != nil {
+			log.Error(err, "Failed to fetch managed child resource for status update", "GVK", gvk, "Namespace", namespace, "Name", name)
+			continue
+		}
+		managedChildren = append(managedChildren, obj)
+	}
+	log.Info("Collected managed child resources for status update", "count", len(managedChildren))
+	for _, obj := range managedChildren {
+		log.Info("Managed child resource for status update", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+	}
+
 	// Check for child resource state changes and update status if needed
-	r.updateStatusForChildResources(ctx, dbqr, allChildResources, dbConfig)
+	r.updateStatusForChildResources(ctx, dbqr, managedChildren, dbConfig)
 
 	// Update Status
 	finalErrors := append(rowProcessingErrors, pruneErrors...)
@@ -658,43 +686,32 @@ func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Contex
 func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, ownedGVKs []schema.GroupVersionKind) ([]*unstructured.Unstructured, error) {
 	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
 	var allChildren []*unstructured.Unstructured
-	selector := labels.SelectorFromSet(labels.Set{
-		ManagedByLabel: dbqr.Name,
-	})
-	for _, gvk := range ownedGVKs {
-		list := &unstructured.UnstructuredList{}
-		list.SetGroupVersionKind(gvk)
-
-		// Check if this resource type is cluster-scoped
-		mapping, err := r.RESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version)
-		if err != nil {
-			log.Error(err, "Failed to get REST mapping for collection", "GVK", gvk)
-			continue
-		}
-
-		// Use appropriate list options based on scope
-		var listOptions []client.ListOption
-		listOptions = append(listOptions, client.MatchingLabelsSelector{Selector: selector})
-
-		if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
-			// Namespaced resource - limit to DBQR namespace
-			listOptions = append(listOptions, client.InNamespace(dbqr.Namespace))
-		}
-		// For cluster-scoped resources, don't add namespace limitation
-
-		err = r.List(ctx, list, listOptions...)
-		if err != nil {
-			if meta.IsNoMatchError(err) || runtime.IsNotRegisteredError(err) {
-				log.V(1).Info("Skipping GVK for collection, not registered in scheme", "GVK", gvk)
+	for _, resID := range dbqr.Status.ManagedResources {
+		// Format: group/version/kind/namespace/name (namespaced) or group/version/kind//name (cluster-scoped)
+		parts := strings.Split(resID, "/")
+		if len(parts) == 5 {
+			group := parts[0]
+			version := parts[1]
+			kind := parts[2]
+			namespace := parts[3]
+			name := parts[4]
+			gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: kind}
+			obj := &unstructured.Unstructured{}
+			obj.SetGroupVersionKind(gvk)
+			var key client.ObjectKey
+			if namespace != "" {
+				key = client.ObjectKey{Namespace: namespace, Name: name}
+			} else {
+				key = client.ObjectKey{Name: name}
+			}
+			err := r.Get(ctx, key, obj)
+			if err != nil {
+				log.Error(err, "Failed to fetch managed child resource", "GVK", gvk, "Namespace", namespace, "Name", name)
 				continue
 			}
-			log.Error(err, "Failed to list resources for collection", "GVK", gvk)
-			return nil, err
-		}
-		log.Info("Found candidates for collection", "GVK", gvk, "Count", len(list.Items))
-		for i := range list.Items {
-			item := &list.Items[i]
-			allChildren = append(allChildren, item)
+			allChildren = append(allChildren, obj)
+		} else {
+			log.Info("Skipping invalid managedResource entry", "entry", resID)
 		}
 	}
 	return allChildren, nil
