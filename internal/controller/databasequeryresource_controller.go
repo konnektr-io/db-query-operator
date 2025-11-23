@@ -687,7 +687,7 @@ func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.C
 	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
 	var allChildren []*unstructured.Unstructured
 	for _, resID := range dbqr.Status.ManagedResources {
-		// Format: group/version/kind/namespace/name (namespaced) or group/version/kind//name (cluster-scoped)
+		// Expect format: group/version/kind/namespace/name (namespaced) or group/version/kind//name (cluster-scoped)
 		parts := strings.Split(resID, "/")
 		if len(parts) == 5 {
 			group := parts[0]
@@ -695,6 +695,10 @@ func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.C
 			kind := parts[2]
 			namespace := parts[3]
 			name := parts[4]
+			if kind == "" || name == "" {
+				log.Info("Skipping managedResource entry with missing kind or name", "entry", resID)
+				continue
+			}
 			gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: kind}
 			obj := &unstructured.Unstructured{}
 			obj.SetGroupVersionKind(gvk)
@@ -711,7 +715,7 @@ func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.C
 			}
 			allChildren = append(allChildren, obj)
 		} else {
-			log.Info("Skipping invalid managedResource entry", "entry", resID)
+			log.Info("Skipping invalid managedResource entry (wrong part count)", "entry", resID, "parts", len(parts))
 		}
 	}
 	return allChildren, nil
@@ -761,7 +765,7 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 // getObjectKey creates a unique string identifier for a Kubernetes object.
 func getObjectKey(obj client.Object) string {
 	gvk := obj.GetObjectKind().GroupVersionKind()
-	return fmt.Sprintf("%s/%s/%s/%s", gvk.Group, gvk.Version, obj.GetNamespace(), obj.GetName())
+	return fmt.Sprintf("%s/%s/%s/%s/%s", gvk.Group, gvk.Version, gvk.Kind, obj.GetNamespace(), obj.GetName())
 }
 
 // setCondition updates the status condition for the CR.
