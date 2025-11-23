@@ -285,7 +285,8 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		}
 	}()
 
-	// Parse Poll Interval
+	// Log the pollInterval value before parsing
+	log.Info("Parsing pollInterval", "pollInterval", dbqr.Spec.PollInterval)
 	pollInterval, err := time.ParseDuration(dbqr.Spec.PollInterval)
 	if err != nil {
 		log.Error(err, "Invalid pollInterval format")
