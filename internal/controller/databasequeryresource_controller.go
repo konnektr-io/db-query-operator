@@ -703,12 +703,13 @@ func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.C
 // updateStatusForChildResources checks all child resources and updates the parent status if any child has changed state.
 func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, children []*unstructured.Unstructured, dbConfig map[string]string) {
 	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
+	log.Info("Status update: entry", "numChildren", len(children), "templateSet", dbqr.Spec.StatusUpdateQueryTemplate != "")
 	if dbqr.Spec.StatusUpdateQueryTemplate == "" {
+		log.Info("Status update: no template set, skipping")
 		return
 	}
 	for _, obj := range children {
 		log.Info("Attempting status update for child resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
-		// Process all resource types, not just Deployments
 		dbClient, err := r.getOrCreateDBClient(ctx, dbqr, dbConfig)
 		if err != nil {
 			log.Error(err, "Failed to get database client for status update", "GVK", obj.GroupVersionKind(), "Name", obj.GetName())
@@ -717,7 +718,7 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 		defer dbClient.Close(ctx)
 		tmpl, err := template.New("statusUpdateQuery").Funcs(sprig.TxtFuncMap()).Parse(dbqr.Spec.StatusUpdateQueryTemplate)
 		if err != nil {
-			log.Error(err, "Failed to parse status update query template (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName())
+			log.Error(err, "Failed to parse status update query template (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName(), "template", dbqr.Spec.StatusUpdateQueryTemplate)
 			continue
 		}
 		var queryBuffer bytes.Buffer
@@ -726,7 +727,7 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 			"Resource": obj.Object,
 		})
 		if err != nil {
-			log.Error(err, "Failed to render status update query (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName())
+			log.Error(err, "Failed to render status update query (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName(), "template", dbqr.Spec.StatusUpdateQueryTemplate)
 			continue
 		}
 		log.Info("Rendered status update query", "GVK", obj.GroupVersionKind(), "Name", obj.GetName(), "query", queryBuffer.String())
