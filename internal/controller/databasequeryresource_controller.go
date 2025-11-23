@@ -465,9 +465,9 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		}
 		group := parts[0]
 		version := parts[1]
-		namespace := parts[2]
-		name := parts[3]
-		kind := parts[4]
+		kind := parts[2]
+		namespace := parts[3]
+		name := parts[4]
 		gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: kind}
 		obj := &unstructured.Unstructured{}
 		obj.SetGroupVersionKind(gvk)
