@@ -187,7 +187,12 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 
 	// Fetch the DatabaseQueryResource instance
 	dbqr := &databasev1alpha1.DatabaseQueryResource{}
-	if err := r.Get(ctx, req.NamespacedName, dbqr); err != nil {
+	allChildResources, err := r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
+	log.Info("Collected child resources for status update", "count", len(allChildResources))
+	for _, obj := range allChildResources {
+		log.Info("Collected child resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+	}
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("DatabaseQueryResource not found. Ignoring since object must be deleted.")
 			return ctrl.Result{}, nil
@@ -437,9 +442,13 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 
 	// Collect all child resources, then prune if enabled
 	var pruneErrors []string
-	allChildResources, err := r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
+	allChildResources, err = r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
 	if err != nil {
 		log.Error(err, "Failed to collect child resources")
+	}
+	log.Info("Collected child resources for status update", "count", len(allChildResources))
+	for _, obj := range allChildResources {
+		log.Info("Collected child resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 	}
 	if dbqr.Spec.GetPrune() {
 		log.Info("Pruning enabled, checking for stale resources")
@@ -707,6 +716,7 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 		return
 	}
 	for _, obj := range children {
+		log.Info("Attempting status update for child resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 		// Process all resource types, not just Deployments
 		dbClient, err := r.getOrCreateDBClient(ctx, dbqr, dbConfig)
 		if err != nil {
