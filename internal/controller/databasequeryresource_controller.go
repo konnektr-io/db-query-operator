@@ -360,12 +360,6 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 			rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("decode error for template output '%s': %v", renderedManifest.String(), err))
 			continue // Skip this row
 		}
-		// Ensure Kind is set for managed resource key
-		if obj.GetKind() == "" {
-			if k, ok := obj.Object["kind"].(string); ok && k != "" {
-				obj.SetKind(k)
-			}
-		}
 
 		// --- Resource Management ---
 
@@ -701,6 +695,7 @@ func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.C
 			kind := parts[2]
 			namespace := parts[3]
 			name := parts[4]
+			log.Info("Parsing managed resource key (prune/collect)", "resID", resID, "group", group, "version", version, "kind", kind, "namespace", namespace, "name", name)
 			if kind == "" || name == "" {
 				log.Info("Skipping managedResource entry with missing kind or name", "entry", resID)
 				continue
@@ -775,7 +770,11 @@ func getObjectKey(obj client.Object) string {
 	kind := gvk.Kind
 	ns := obj.GetNamespace()
 	name := obj.GetName()
-	return fmt.Sprintf("%s/%s/%s/%s/%s", gvk.Group, gvk.Version, kind, ns, name)
+	// Correct order: group/version/kind/namespace/name
+	key := fmt.Sprintf("%s/%s/%s/%s/%s", gvk.Group, gvk.Version, kind, ns, name)
+	log := log.Log.WithValues("func", "getObjectKey")
+	log.Info("Constructed managed resource key", "key", key, "group", gvk.Group, "version", gvk.Version, "kind", kind, "namespace", ns, "name", name)
+	return key
 }
 
 // setCondition updates the status condition for the CR.
@@ -805,28 +804,29 @@ func (r *DatabaseQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manag
 		For(&databasev1alpha1.DatabaseQueryResource{})
 
 	// Custom event handler for owned resources
-	for _, gvk := range ownedGVKs {
-		u := &unstructured.Unstructured{}
-		u.SetGroupVersionKind(gvk)
-		controllerBuilder = controllerBuilder.Owns(u, builder.WithPredicates(
-			statusChangePredicate(),
-			predicate.ResourceVersionChangedPredicate{},
-			predicate.GenerationChangedPredicate{},
-			predicate.AnnotationChangedPredicate{},
-			predicate.LabelChangedPredicate{},
-		))
-	}
-
-	return controllerBuilder.Complete(r)
-}
-
-func statusChangePredicate() predicate.Predicate {
-	return predicate.Funcs{
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			// Always trigger on update (including status changes)
-			return true
-		},
-		CreateFunc:  func(e event.CreateEvent) bool { return true },
+		for _, resID := range dbqr.Status.ManagedResources {
+			// Format: group/version/kind/namespace/name
+			parts := strings.Split(resID, "/")
+			if len(parts) != 5 {
+				log.Info("Skipping invalid managedResource entry (status update)", "entry", resID)
+				continue
+			}
+			group := parts[0]
+			version := parts[1]
+			kind := parts[2]
+			namespace := parts[3]
+			name := parts[4]
+			log.Info("Parsing managed resource key for status update", "resID", resID, "group", group, "version", version, "kind", kind, "namespace", namespace, "name", name)
+			gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: kind}
+			obj := &unstructured.Unstructured{}
+			obj.SetGroupVersionKind(gvk)
+			err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, obj)
+			if err != nil {
+				log.Error(err, "Failed to fetch managed child resource for status update", "GVK", gvk, "Namespace", namespace, "Name", name)
+				continue
+			}
+			managedChildren = append(managedChildren, obj)
+		}
 		DeleteFunc:  func(e event.DeleteEvent) bool { return false },
 		GenericFunc: func(e event.GenericEvent) bool { return false },
 	}
