@@ -187,12 +187,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 
 	// Fetch the DatabaseQueryResource instance
 	dbqr := &databasev1alpha1.DatabaseQueryResource{}
-	allChildResources, err := r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
-	log.Info("Collected child resources for status update", "count", len(allChildResources))
-	for _, obj := range allChildResources {
-		log.Info("Collected child resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
-	}
-	if err != nil {
+	if err := r.Get(ctx, req.NamespacedName, dbqr); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("DatabaseQueryResource not found. Ignoring since object must be deleted.")
 			return ctrl.Result{}, nil
@@ -347,7 +342,6 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, nil // Invalid template, don't requeue based on interval
 	}
 
-	var processedRows []map[string]interface{} // Store successfully processed row data for status updates
 
 	for _, rowData := range results {
 		// Render the template
@@ -438,12 +432,11 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 
 		resourceKey := getObjectKey(obj)
 		managedResourceKeys[resourceKey] = true
-		processedRows = append(processedRows, rowData)
 	}
 
 	// Collect all child resources, then prune if enabled
 	var pruneErrors []string
-	allChildResources, err = r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
+	allChildResources, err := r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
 	if err != nil {
 		log.Error(err, "Failed to collect child resources")
 	}
@@ -639,10 +632,7 @@ func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Contex
 	var errors []string
 
 	// Debug logging: show what we're comparing
-	currentKeysList := make([]string, 0, len(currentKeys))
-	for k := range currentKeys {
-		currentKeysList = append(currentKeysList, k)
-	}
+	// currentKeysList is only used for debug logging, so we can remove it if not needed
 
 	for _, item := range allChildren {
 		objKey := getObjectKey(item)
