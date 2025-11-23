@@ -295,7 +295,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 
 	// Determine if we should reconcile based on change detection
 	shouldReconcile, nextCheckInterval := r.shouldReconcile(ctx, dbqr, log, pollInterval)
-	
+
 	if !shouldReconcile {
 		log.V(1).Info("No changes detected, skipping reconciliation", "nextCheck", nextCheckInterval)
 		return ctrl.Result{RequeueAfter: nextCheckInterval}, nil
@@ -570,20 +570,20 @@ func (r *DatabaseQueryResourceReconciler) getDBConfig(ctx context.Context, dbqr 
 		if !ok {
 			return nil, fmt.Errorf("URIKey '%s' not found in secret '%s/%s'", secretRef.URIKey, secretNamespace, secretName)
 		}
-		
+
 		uri := string(uriBytes)
 		config, err := r.parsePostgreSQLURI(uri)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse PostgreSQL URI from key '%s': %w", secretRef.URIKey, err)
 		}
-		
+
 		r.Log.Info("Using connection URI from secret", "secret", secretName, "uriKey", secretRef.URIKey)
 		return config, nil
 	}
 
 	// Fallback to individual field parsing
 	r.Log.Info("Using individual connection fields from secret", "secret", secretName)
-	
+
 	// Get values using defaults
 	getValue := func(key, defaultValue string) (string, error) {
 		if key == "" {
@@ -636,13 +636,13 @@ func (r *DatabaseQueryResourceReconciler) getDBConfig(ctx context.Context, dbqr 
 func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, currentKeys map[string]bool, allChildren []*unstructured.Unstructured) []string {
 	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
 	var errors []string
-	
+
 	// Debug logging: show what we're comparing
 	currentKeysList := make([]string, 0, len(currentKeys))
 	for k := range currentKeys {
 		currentKeysList = append(currentKeysList, k)
 	}
-	
+
 	for _, item := range allChildren {
 		objKey := getObjectKey(item)
 
@@ -738,6 +738,7 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 			log.Error(err, "Failed to render status update query (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName())
 			continue
 		}
+		log.Info("Rendered status update query", "GVK", obj.GroupVersionKind(), "Name", obj.GetName(), "query", queryBuffer.String())
 		err = dbClient.Exec(ctx, queryBuffer.String())
 		if err != nil {
 			log.Error(err, "Failed to execute status update query (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName(), "query", queryBuffer.String())
