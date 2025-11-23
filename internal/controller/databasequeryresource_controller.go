@@ -341,7 +341,6 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, nil // Invalid template, don't requeue based on interval
 	}
 
-
 	for _, rowData := range results {
 		// Render the template
 		var renderedManifest bytes.Buffer
@@ -804,29 +803,29 @@ func (r *DatabaseQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manag
 		For(&databasev1alpha1.DatabaseQueryResource{})
 
 	// Custom event handler for owned resources
-		for _, resID := range dbqr.Status.ManagedResources {
-			// Format: group/version/kind/namespace/name
-			parts := strings.Split(resID, "/")
-			if len(parts) != 5 {
-				log.Info("Skipping invalid managedResource entry (status update)", "entry", resID)
-				continue
-			}
-			group := parts[0]
-			version := parts[1]
-			kind := parts[2]
-			namespace := parts[3]
-			name := parts[4]
-			log.Info("Parsing managed resource key for status update", "resID", resID, "group", group, "version", version, "kind", kind, "namespace", namespace, "name", name)
-			gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: kind}
-			obj := &unstructured.Unstructured{}
-			obj.SetGroupVersionKind(gvk)
-			err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, obj)
-			if err != nil {
-				log.Error(err, "Failed to fetch managed child resource for status update", "GVK", gvk, "Namespace", namespace, "Name", name)
-				continue
-			}
-			managedChildren = append(managedChildren, obj)
-		}
+	for _, gvk := range ownedGVKs {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+		controllerBuilder = controllerBuilder.Owns(u, builder.WithPredicates(
+			statusChangePredicate(),
+			predicate.ResourceVersionChangedPredicate{},
+			predicate.GenerationChangedPredicate{},
+			predicate.AnnotationChangedPredicate{},
+			predicate.LabelChangedPredicate{},
+		))
+	}
+
+	return controllerBuilder.Complete(r)
+}
+
+// statusChangePredicate returns a predicate that always triggers on update and create, but not on delete or generic events.
+func statusChangePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			// Always trigger on update (including status changes)
+			return true
+		},
+		CreateFunc:  func(e event.CreateEvent) bool { return true },
 		DeleteFunc:  func(e event.DeleteEvent) bool { return false },
 		GenericFunc: func(e event.GenericEvent) bool { return false },
 	}
