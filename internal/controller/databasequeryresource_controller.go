@@ -360,6 +360,12 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 			rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("decode error for template output '%s': %v", renderedManifest.String(), err))
 			continue // Skip this row
 		}
+		// Ensure Kind is set for managed resource key
+		if obj.GetKind() == "" {
+			if k, ok := obj.Object["kind"].(string); ok && k != "" {
+				obj.SetKind(k)
+			}
+		}
 
 		// --- Resource Management ---
 
@@ -702,6 +708,7 @@ func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.C
 			gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: kind}
 			obj := &unstructured.Unstructured{}
 			obj.SetGroupVersionKind(gvk)
+			obj.SetKind(kind) // Ensure kind is set for status update templates
 			var key client.ObjectKey
 			if namespace != "" {
 				key = client.ObjectKey{Namespace: namespace, Name: name}
@@ -765,7 +772,10 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 // getObjectKey creates a unique string identifier for a Kubernetes object.
 func getObjectKey(obj client.Object) string {
 	gvk := obj.GetObjectKind().GroupVersionKind()
-	return fmt.Sprintf("%s/%s/%s/%s/%s", gvk.Group, gvk.Version, gvk.Kind, obj.GetNamespace(), obj.GetName())
+	kind := gvk.Kind
+	ns := obj.GetNamespace()
+	name := obj.GetName()
+	return fmt.Sprintf("%s/%s/%s/%s/%s", gvk.Group, gvk.Version, kind, ns, name)
 }
 
 // setCondition updates the status condition for the CR.
@@ -919,7 +929,7 @@ func (r *DatabaseQueryResourceReconciler) shouldReconcile(
 	return false, changePollInterval
 }
 
-// detectChanges runs the change detection query
+// detectChanges runs the change detection query (on the database)
 func (r *DatabaseQueryResourceReconciler) detectChanges(
 	ctx context.Context,
 	dbqr *databasev1alpha1.DatabaseQueryResource,
