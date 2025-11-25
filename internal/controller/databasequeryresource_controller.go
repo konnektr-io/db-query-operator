@@ -977,12 +977,7 @@ func (r *DatabaseQueryResourceReconciler) detectChanges(
 		"query", formattedQuery,
 		"lastCheckTime", lastCheckTime)
 
-	pgClient, ok := db.(*util.PostgresDatabaseClient)
-	if !ok {
-		log.Error(fmt.Errorf("unexpected dbClient type"), "Expected PostgresDatabaseClient")
-		return false, fmt.Errorf("expected PostgresDatabaseClient")
-	}
-	rows, _, err := pgClient.QueryRead(ctx, formattedQuery)
+	rows, _, err := db.QueryRead(ctx, formattedQuery)
 	if err != nil {
 		return false, fmt.Errorf("change detection query failed: %w", err)
 	}
