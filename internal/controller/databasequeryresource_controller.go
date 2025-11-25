@@ -321,13 +321,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	setCondition(dbqr, ConditionDBConnected, metav1.ConditionTrue, "Connected", "Successfully connected to the database")
 
 	// Execute Query
-	pgClient, ok := dbClient.(*util.PostgresDatabaseClient)
-	if !ok {
-		log.Error(fmt.Errorf("unexpected dbClient type"), "Expected PostgresDatabaseClient")
-		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBClientTypeError", "Expected PostgresDatabaseClient")
-		return ctrl.Result{}, nil
-	}
-	results, columnNames, err := pgClient.QueryRead(ctx, dbqr.Spec.Query)
+	results, columnNames, err := dbClient.QueryRead(ctx, dbqr.Spec.Query)
 	if err != nil {
 		log.Error(err, "Failed to execute database query", "query", dbqr.Spec.Query)
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "QueryFailed", fmt.Sprintf("Failed to execute query: %v", err))
