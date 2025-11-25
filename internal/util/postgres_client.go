@@ -9,55 +9,80 @@ import (
 )
 
 type PostgresDatabaseClient struct {
-	conn *pgx.Conn
+       connWrite *pgx.Conn // for writes
+       connRead  *pgx.Conn // for reads (SELECT)
+}
+
+func (p *PostgresDatabaseClient) QueryRead(ctx context.Context, query string) ([]RowResult, []string, error) {
+       statements := splitStatements(query)
+       if len(statements) == 1 {
+	       return p.executeSingleQuery(ctx, p.connRead, statements[0])
+       }
+       if len(statements) > 1 {
+	       batch := &pgx.Batch{}
+	       for i := 0; i < len(statements)-1; i++ {
+		       batch.Queue(statements[i])
+	       }
+	       batchResults := p.connRead.SendBatch(ctx, batch)
+	       err := batchResults.Close()
+	       if err != nil {
+		       return nil, nil, fmt.Errorf("failed to execute batch commands: %w", err)
+	       }
+	       return p.executeSingleQuery(ctx, p.connRead, statements[len(statements)-1])
+       }
+       return nil, nil, fmt.Errorf("no statements to execute")
+}
+
+func (p *PostgresDatabaseClient) QueryWrite(ctx context.Context, query string) ([]RowResult, []string, error) {
+       statements := splitStatements(query)
+       if len(statements) == 1 {
+	       return p.executeSingleQuery(ctx, p.connWrite, statements[0])
+       }
+       if len(statements) > 1 {
+	       batch := &pgx.Batch{}
+	       for i := 0; i < len(statements)-1; i++ {
+		       batch.Queue(statements[i])
+	       }
+	       batchResults := p.connWrite.SendBatch(ctx, batch)
+	       err := batchResults.Close()
+	       if err != nil {
+		       return nil, nil, fmt.Errorf("failed to execute batch commands: %w", err)
+	       }
+	       return p.executeSingleQuery(ctx, p.connWrite, statements[len(statements)-1])
+       }
+       return nil, nil, fmt.Errorf("no statements to execute")
 }
 
 func (p *PostgresDatabaseClient) Connect(ctx context.Context, config map[string]string) error {
-	connString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+	// Connect to write (primary)
+	connStringWrite := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
 		config["username"], config["password"], config["host"], config["port"], config["dbname"], config["sslmode"])
-	conn, err := pgx.Connect(ctx, connString)
+	connWrite, err := pgx.Connect(ctx, connStringWrite)
 	if err != nil {
 		return err
 	}
-	p.conn = conn
+	p.connWrite = connWrite
+
+	// Connect to read (replica) if provided
+	if readonlyHost, ok := config["readonly_host"]; ok && readonlyHost != "" {
+		connStringRead := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+			config["username"], config["password"], readonlyHost, config["port"], config["dbname"], config["sslmode"])
+		connRead, err := pgx.Connect(ctx, connStringRead)
+		if err != nil {
+			// If replica fails, fallback to primary for reads
+			p.connRead = p.connWrite
+		} else {
+			p.connRead = connRead
+		}
+	} else {
+		p.connRead = p.connWrite
+	}
 	return nil
 }
 
-func (p *PostgresDatabaseClient) Query(ctx context.Context, query string) ([]RowResult, []string, error) {
-	// Split query into multiple statements if separated by semicolons
-	statements := splitStatements(query)
-
-	// If there's only one statement, execute it directly
-	if len(statements) == 1 {
-		return p.executeSingleQuery(ctx, statements[0])
-	}
-
-	// Multiple statements: use batch for all but the last, then query the last one
-	if len(statements) > 1 {
-		batch := &pgx.Batch{}
-		// Add all statements except the last to the batch
-		for i := 0; i < len(statements)-1; i++ {
-			batch.Queue(statements[i])
-		}
-
-		// Execute the batch (setup commands like LOAD, SET)
-		batchResults := p.conn.SendBatch(ctx, batch)
-		// Close the batch results to ensure all commands are executed
-		err := batchResults.Close()
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to execute batch commands: %w", err)
-		}
-
-		// Execute the final statement (the actual query that returns data)
-		return p.executeSingleQuery(ctx, statements[len(statements)-1])
-	}
-
-	return nil, nil, fmt.Errorf("no statements to execute")
-}
-
 // executeSingleQuery executes a single query statement and returns results
-func (p *PostgresDatabaseClient) executeSingleQuery(ctx context.Context, query string) ([]RowResult, []string, error) {
-	rows, err := p.conn.Query(ctx, query)
+func (p *PostgresDatabaseClient) executeSingleQuery(ctx context.Context, conn *pgx.Conn, query string) ([]RowResult, []string, error) {
+       rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -70,21 +95,22 @@ func (p *PostgresDatabaseClient) executeSingleQuery(ctx context.Context, query s
 
 	var results []RowResult
 	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			return nil, nil, err
-		}
-		row := make(RowResult)
-		for i, colName := range columnNames {
-			row[colName] = values[i]
-		}
-		results = append(results, row)
+	       values, err := rows.Values()
+	       if err != nil {
+		       return nil, nil, err
+	       }
+	       row := make(RowResult)
+	       for i, colName := range columnNames {
+		       row[colName] = values[i]
+	       }
+	       results = append(results, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
 	return results, columnNames, nil
 }
+
 
 // splitStatements splits a SQL query string into individual statements
 // This is a simple implementation that splits on semicolons not inside quotes
@@ -164,16 +190,24 @@ func splitStatements(query string) []string {
 }
 
 func (p *PostgresDatabaseClient) Exec(ctx context.Context, query string) error {
-	if p.conn == nil {
+	if p.connWrite == nil {
 		return fmt.Errorf("no database connection")
 	}
-	_, err := p.conn.Exec(ctx, query)
+	_, err := p.connWrite.Exec(ctx, query)
 	return err
 }
 
 func (p *PostgresDatabaseClient) Close(ctx context.Context) error {
-	if p.conn != nil {
-		return p.conn.Close(ctx)
+	var err error
+	if p.connRead != nil && p.connRead != p.connWrite {
+		if e := p.connRead.Close(ctx); e != nil {
+			err = e
+		}
 	}
-	return nil
+	if p.connWrite != nil {
+		if e := p.connWrite.Close(ctx); e != nil {
+			err = e
+		}
+	}
+	return err
 }

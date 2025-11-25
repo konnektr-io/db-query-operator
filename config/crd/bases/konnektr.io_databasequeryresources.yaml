@@ -109,6 +109,10 @@ spec:
                         description: Key within the Secret for the database port.
                           Defaults to "port".
                         type: string
+                      readonlyHostKey:
+                        description: Key within the Secret for the readonly replica
+                          host. Defaults to "readonly_host" if present.
+                        type: string
                       sslModeKey:
                         description: Key within the Secret for the SSL mode. Defaults
                           to "sslmode". Use 'disable' if not needed.

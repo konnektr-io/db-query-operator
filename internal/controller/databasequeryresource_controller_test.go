@@ -748,8 +748,8 @@ data:
 				g.Expect(createdCM.Data["name"]).To(Equal("test-resource"))
 			}, timeout, interval).Should(Succeed())
 
+
 			// Simulate a change in the database by updating the timestamp
-			// Change detection query should pick this up
 			newTime := time.Now()
 			mock.mu.Lock()
 			mock.Rows = []util.RowResult{
@@ -758,14 +758,16 @@ data:
 			mock.mu.Unlock()
 
 			// Wait for change detection to trigger reconciliation
-			// Should happen within a few seconds (changePollInterval = 2s)
 			By("Waiting for change detection to trigger update")
 			Eventually(func(g Gomega) {
 				g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
 				g.Expect(createdCM.Data["name"]).To(Equal("updated-resource"))
 			}, time.Second*10, interval).Should(Succeed())
 
-			// Verify that LastChangeCheckTime was updated
+			// Add a short delay to allow status update to propagate
+			time.Sleep(2 * time.Second)
+
+			// Always re-fetch the CR before checking status
 			Eventually(func(g Gomega) {
 				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
 				g.Expect(created.Status.LastChangeCheckTime).NotTo(BeNil())
@@ -859,6 +861,14 @@ type MockDatabaseClient struct {
 	ExecCalls []string
 	FailQuery bool
 	mu        sync.RWMutex
+}
+
+func (m *MockDatabaseClient) QueryRead(ctx context.Context, query string) ([]util.RowResult, []string, error) {
+	return m.Query(ctx, query)
+}
+
+func (m *MockDatabaseClient) QueryWrite(ctx context.Context, query string) ([]util.RowResult, []string, error) {
+	return m.Query(ctx, query)
 }
 
 func (m *MockDatabaseClient) Connect(ctx context.Context, config map[string]string) error { return nil }
