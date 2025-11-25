@@ -321,7 +321,13 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	setCondition(dbqr, ConditionDBConnected, metav1.ConditionTrue, "Connected", "Successfully connected to the database")
 
 	// Execute Query
-	results, columnNames, err := dbClient.Query(ctx, dbqr.Spec.Query)
+	pgClient, ok := dbClient.(*util.PostgresDatabaseClient)
+	if !ok {
+		log.Error(fmt.Errorf("unexpected dbClient type"), "Expected PostgresDatabaseClient")
+		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBClientTypeError", "Expected PostgresDatabaseClient")
+		return ctrl.Result{}, nil
+	}
+	results, columnNames, err := pgClient.QueryRead(ctx, dbqr.Spec.Query)
 	if err != nil {
 		log.Error(err, "Failed to execute database query", "query", dbqr.Spec.Query)
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "QueryFailed", fmt.Sprintf("Failed to execute query: %v", err))
@@ -628,6 +634,12 @@ func (r *DatabaseQueryResourceReconciler) getDBConfig(ctx context.Context, dbqr 
 	config["host"], err = getValue(secretRef.HostKey, "host")
 	if err != nil {
 		return nil, err
+	}
+	// Add support for readonly_host
+	if secretRef.ReadonlyHostKey != "" {
+		config["readonly_host"], _ = getValue(secretRef.ReadonlyHostKey, "readonly_host")
+	} else if val, ok := secret.Data["readonly_host"]; ok {
+		config["readonly_host"] = string(val)
 	}
 	config["port"], err = getValue(secretRef.PortKey, "port")
 	if err != nil {
@@ -971,7 +983,12 @@ func (r *DatabaseQueryResourceReconciler) detectChanges(
 		"query", formattedQuery,
 		"lastCheckTime", lastCheckTime)
 
-	rows, _, err := db.Query(ctx, formattedQuery)
+	pgClient, ok := db.(*util.PostgresDatabaseClient)
+	if !ok {
+		log.Error(fmt.Errorf("unexpected dbClient type"), "Expected PostgresDatabaseClient")
+		return false, fmt.Errorf("expected PostgresDatabaseClient")
+	}
+	rows, _, err := pgClient.QueryRead(ctx, formattedQuery)
 	if err != nil {
 		return false, fmt.Errorf("change detection query failed: %w", err)
 	}

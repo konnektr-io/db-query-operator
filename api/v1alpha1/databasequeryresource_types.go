@@ -22,6 +22,9 @@ type DatabaseConnectionSecretRef struct {
 	// Key within the Secret for the database host. Defaults to "host".
 	// +optional
 	HostKey string `json:"hostKey,omitempty"`
+	// Key within the Secret for the readonly replica host. Defaults to "readonly_host" if present.
+	// +optional
+	ReadonlyHostKey string `json:"readonlyHostKey,omitempty"`
 	// Key within the Secret for the database port. Defaults to "port".
 	// +optional
 	PortKey string `json:"portKey,omitempty"`

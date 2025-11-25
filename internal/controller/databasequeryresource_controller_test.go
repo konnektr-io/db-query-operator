@@ -861,6 +861,14 @@ type MockDatabaseClient struct {
 	mu        sync.RWMutex
 }
 
+func (m *MockDatabaseClient) QueryRead(ctx context.Context, query string) ([]util.RowResult, []string, error) {
+	return m.Query(ctx, query)
+}
+
+func (m *MockDatabaseClient) QueryWrite(ctx context.Context, query string) ([]util.RowResult, []string, error) {
+	return m.Query(ctx, query)
+}
+
 func (m *MockDatabaseClient) Connect(ctx context.Context, config map[string]string) error { return nil }
 func (m *MockDatabaseClient) Query(ctx context.Context, query string) ([]util.RowResult, []string, error) {
 	m.mu.RLock()
