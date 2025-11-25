@@ -818,7 +818,7 @@ func (r *DatabaseQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manag
 	return controllerBuilder.Complete(r)
 }
 
-// statusChangePredicate returns a predicate that always triggers on update and create, but not on delete or generic events.
+// statusChangePredicate returns a predicate that always triggers on update, create, delete, but not on generic events.
 func statusChangePredicate() predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
@@ -826,7 +826,7 @@ func statusChangePredicate() predicate.Predicate {
 			return true
 		},
 		CreateFunc:  func(e event.CreateEvent) bool { return true },
-		DeleteFunc:  func(e event.DeleteEvent) bool { return false },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return true },
 		GenericFunc: func(e event.GenericEvent) bool { return false },
 	}
 }
