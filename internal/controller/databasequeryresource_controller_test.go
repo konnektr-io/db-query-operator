@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	databasev1alpha1 "github.com/konnektr-io/db-query-operator/api/v1alpha1"
@@ -31,7 +30,7 @@ var _ = Describe("DatabaseQueryResource controller", func() {
 	Describe("When reconciling a DatabaseQueryResource", func() {
 		It("Should create a ConfigMap with correct labels and update status using mock DB", func() {
 			ctx := context.Background()
-			mock := &MockDatabaseClient{
+			mock := &util.MockDatabaseClient{
 				Rows:    []util.RowResult{{"id": 42}},
 				Columns: []string{"id"},
 			}
@@ -108,9 +107,9 @@ data:
 			}, timeout, interval).Should(Succeed())
 
 			// Remove all rows from the mock DB to simulate the resource disappearing from the database
-			mock.mu.Lock()
+			mock.Mu.Lock()
 			mock.Rows = []util.RowResult{}
-			mock.mu.Unlock()
+			mock.Mu.Unlock()
 
 			// Wait for more than the poll interval to allow the controller to reconcile and prune
 			time.Sleep(12 * time.Second)
@@ -124,7 +123,7 @@ data:
 
 		It("should create a resource with the parent namespace if namespace is not defined in the template", func() {
 			ctx := context.Background()
-			mock := &MockDatabaseClient{
+			mock := &util.MockDatabaseClient{
 				Rows:    []util.RowResult{{"id": 42}},
 				Columns: []string{"id"},
 			}
@@ -200,9 +199,9 @@ data:
 			}, timeout, interval).Should(Succeed())
 
 			// Remove all rows from the mock DB to simulate the resource disappearing from the database
-			mock.mu.Lock()
+			mock.Mu.Lock()
 			mock.Rows = []util.RowResult{}
-			mock.mu.Unlock()
+			mock.Mu.Unlock()
 
 			// Wait for more than the poll interval to allow the controller to reconcile and prune
 			time.Sleep(12 * time.Second)
@@ -216,7 +215,7 @@ data:
 
 		It("should create a resource without namespace if cluster scoped", func() {
 			ctx := context.Background()
-			mock := &MockDatabaseClient{
+			mock := &util.MockDatabaseClient{
 				Rows:    []util.RowResult{{"id": 42}},
 				Columns: []string{"id"},
 			}
@@ -288,9 +287,9 @@ metadata:
 			}, timeout, interval).Should(Succeed())
 
 			// Remove all rows from the mock DB to simulate the resource disappearing from the database
-			mock.mu.Lock()
+			mock.Mu.Lock()
 			mock.Rows = []util.RowResult{}
-			mock.mu.Unlock()
+			mock.Mu.Unlock()
 
 			// Wait for more than the poll interval to allow the controller to reconcile and prune
 			time.Sleep(12 * time.Second)
@@ -311,7 +310,7 @@ metadata:
 	Describe("with multiple rows and advanced templating", func() {
 		It("should create/update resources for each row and not prune when prune=false", func() {
 			ctx := context.Background()
-			mock := &MockDatabaseClient{
+			mock := &util.MockDatabaseClient{
 				Rows: []util.RowResult{
 					{"id": 1, "name": "Alice", "age": 30},
 					{"id": 2, "name": "Bob", "age": 25},
@@ -407,12 +406,12 @@ data:
 			}
 
 			// Now update the mock DB: change Bob's age, remove Charlie
-			mock.mu.Lock()
+			mock.Mu.Lock()
 			mock.Rows = []util.RowResult{
 				{"id": 1, "name": "Alice", "age": 30},
 				{"id": 2, "name": "Bob", "age": 26}, // Bob's age changed
 			}
-			mock.mu.Unlock()
+			mock.Mu.Unlock()
 
 			// Wait for more than the poll interval
 			time.Sleep(12 * time.Second)
@@ -448,7 +447,7 @@ data:
 	Describe("DatabaseQueryResource child resource state change", func() {
 		It("should update parent status and execute status update query when a Deployment changes state", func() {
 			ctx := context.Background()
-			mock := &MockDatabaseClient{
+			mock := &util.MockDatabaseClient{
 				Rows: []util.RowResult{
 					{"name": "my-deploy", "status": "Pending"},
 				},
@@ -559,8 +558,8 @@ spec:
 			// Check that the mock DB Exec was called with the expected status update query
 			// Verify both the status update and that the kind is correctly extracted
 			Eventually(func(g Gomega) {
-				mock.mu.RLock()
-				defer mock.mu.RUnlock()
+				mock.Mu.RLock()
+				defer mock.Mu.RUnlock()
 				found := false
 				kindFound := false
 				for _, q := range mock.ExecCalls {
@@ -581,7 +580,7 @@ spec:
 	Describe("Finalizer cleanup logic", func() {
 		It("should delete managed resources and remove the finalizer when the CR is deleted and the finalizer is set", func() {
 			ctx := context.Background()
-			mock := &MockDatabaseClient{
+			mock := &util.MockDatabaseClient{
 				Rows:    []util.RowResult{{"id": 99}},
 				Columns: []string{"id"},
 			}
@@ -667,7 +666,7 @@ data:
 			
 			// Mock database with initial data and timestamp
 			initialTime := time.Now().Add(-1 * time.Hour)
-			mock := &MockDatabaseClient{
+			mock := &util.MockDatabaseClient{
 				Rows: []util.RowResult{
 					{"id": 100, "name": "test-resource", "updated_at": initialTime},
 				},
@@ -751,11 +750,11 @@ data:
 
 			// Simulate a change in the database by updating the timestamp
 			newTime := time.Now()
-			mock.mu.Lock()
+			mock.Mu.Lock()
 			mock.Rows = []util.RowResult{
 				{"id": 100, "name": "updated-resource", "updated_at": newTime},
 			}
-			mock.mu.Unlock()
+			mock.Mu.Unlock()
 
 			// Wait for change detection to trigger reconciliation
 			By("Waiting for change detection to trigger update")
@@ -776,7 +775,7 @@ data:
 
 		It("should perform full reconciliation when change detection is disabled", func() {
 			ctx := context.Background()
-			mock := &MockDatabaseClient{
+			mock := &util.MockDatabaseClient{
 				Rows:    []util.RowResult{{"id": 200}},
 				Columns: []string{"id"},
 			}
@@ -851,46 +850,6 @@ data:
 	})
 
 })
-
-// MockDatabaseClient implements util.DatabaseClient for testing
-// It returns configurable results and errors
-
-type MockDatabaseClient struct {
-	Rows      []util.RowResult
-	Columns   []string
-	ExecCalls []string
-	FailQuery bool
-	mu        sync.RWMutex
-}
-
-func (m *MockDatabaseClient) QueryRead(ctx context.Context, query string) ([]util.RowResult, []string, error) {
-	return m.Query(ctx, query)
-}
-
-func (m *MockDatabaseClient) QueryWrite(ctx context.Context, query string) ([]util.RowResult, []string, error) {
-	return m.Query(ctx, query)
-}
-
-func (m *MockDatabaseClient) Connect(ctx context.Context, config map[string]string) error { return nil }
-func (m *MockDatabaseClient) Query(ctx context.Context, query string) ([]util.RowResult, []string, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.FailQuery {
-		return nil, nil, context.DeadlineExceeded
-	}
-	rowsCopy := make([]util.RowResult, len(m.Rows))
-	copy(rowsCopy, m.Rows)
-	columnsCopy := make([]string, len(m.Columns))
-	copy(columnsCopy, m.Columns)
-	return rowsCopy, columnsCopy, nil
-}
-func (m *MockDatabaseClient) Exec(ctx context.Context, query string) error {
-	m.mu.Lock()
-	m.ExecCalls = append(m.ExecCalls, query)
-	m.mu.Unlock()
-	return nil
-}
-func (m *MockDatabaseClient) Close(ctx context.Context) error { return nil }
 
 // Helper for pointer to bool
 func ptrBool(b bool) *bool { return &b }
