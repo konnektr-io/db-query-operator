@@ -575,6 +575,147 @@ spec:
 				g.Expect(kindFound).To(BeTrue(), "Status update query should include kind = 'Deployment'")
 			}, timeout*2, interval).Should(Succeed())
 		})
+
+		It("should update parent status when a Deployment changes state even with change detection enabled", func() {
+			ctx := context.Background()
+			mock := &util.MockDatabaseClient{
+				Rows: []util.RowResult{
+					{"name": "my-deploy-cd", "status": "Pending"},
+				},
+				Columns: []string{"name", "status"},
+			}
+
+			TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
+				return mock, nil
+			}
+
+			// Create a dummy Secret required by the controller
+			dummySecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deploy-cd-secret",
+					Namespace: ResourceNamespace,
+				},
+				Data: map[string][]byte{
+					"host":     []byte("localhost"),
+					"port":     []byte("5432"),
+					"username": []byte("testuser"),
+					"password": []byte("testpass"),
+					"dbname":   []byte("testdb"),
+					"sslmode":  []byte("disable"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, dummySecret)).To(Succeed())
+
+			// Create the DatabaseQueryResource with change detection enabled
+			statusUpdateQuery := `UPDATE deployments SET status = '{{ .Resource.status.availableReplicas | default 0 }}', kind = '{{ .Resource.kind }}' WHERE name = '{{ .Resource.metadata.name }}';`
+			dbqr := &databasev1alpha1.DatabaseQueryResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deploy-cd-dbqr",
+					Namespace: ResourceNamespace,
+				},
+				Spec: databasev1alpha1.DatabaseQueryResourceSpec{
+					PollInterval: "5m", // Long interval to ensure we're not relying on it
+					Prune:        ptrBool(true),
+					Database: databasev1alpha1.DatabaseSpec{
+						Type: "postgres",
+						ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
+							Name:      "deploy-cd-secret",
+							Namespace: ResourceNamespace,
+						},
+					},
+					Query: "SELECT 'my-deploy-cd' as name, 'Pending' as status",
+					Template: `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Row.name }}
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Row.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Row.name }}
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.14.2
+        ports:
+        - containerPort: 80`,
+					StatusUpdateQueryTemplate: statusUpdateQuery,
+					ChangeDetection: &databasev1alpha1.ChangeDetectionConfig{
+						Enabled:            true,
+						TableName:          "test_table",
+						TimestampColumn:    "updated_at",
+						ChangePollInterval: "30s", // Check for DB changes every 30s
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dbqr)).To(Succeed())
+
+			// Wait for the Deployment to be created
+			deployName := "my-deploy-cd"
+			deployLookup := types.NamespacedName{Name: deployName, Namespace: ResourceNamespace}
+			createdDeploy := &appsv1.Deployment{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, deployLookup, createdDeploy)).To(Succeed())
+			}, timeout, interval).Should(Succeed())
+
+			// Record the initial reconcile time
+			lookupKey := types.NamespacedName{Name: "deploy-cd-dbqr", Namespace: ResourceNamespace}
+			created := &databasev1alpha1.DatabaseQueryResource{}
+			Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+			initialReconcileTime := created.Status.LastReconcileTime
+
+			// Patch the Deployment status to simulate readiness
+			// This should trigger the controller via the watch
+			createdDeploy.Status.Replicas = 1
+			createdDeploy.Status.ReadyReplicas = 1
+			createdDeploy.Status.AvailableReplicas = 1
+			Expect(k8sClient.Status().Update(ctx, createdDeploy)).To(Succeed())
+
+			// Wait for the Deployment to become available (ready)
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, deployLookup, createdDeploy)
+				g.Expect(err).ToNot(HaveOccurred())
+				g.Expect(createdDeploy.Status.AvailableReplicas).To(BeNumerically(">=", 1))
+			}, timeout*2, interval).Should(Succeed())
+
+			// The child resource update should trigger reconciliation and execute the status update query
+			// even though change detection is enabled and we haven't reached the poll interval
+			Eventually(func(g Gomega) {
+				mock.Mu.RLock()
+				defer mock.Mu.RUnlock()
+				found := false
+				kindFound := false
+				for _, q := range mock.ExecCalls {
+					if strings.Contains(q, "UPDATE deployments SET status") && strings.Contains(q, "my-deploy-cd") {
+						found = true
+						// Verify that the kind 'Deployment' is included in the query
+						if strings.Contains(q, "kind = 'Deployment'") {
+							kindFound = true
+						}
+					}
+				}
+				if !found {
+					fmt.Printf("ExecCalls so far: %+v\n", mock.ExecCalls)
+				}
+				g.Expect(found).To(BeTrue(), "Status update query should be executed when child updates, even with change detection")
+				g.Expect(kindFound).To(BeTrue(), "Status update query should include kind = 'Deployment'")
+			}, timeout*3, interval).Should(Succeed())
+
+			// Verify that reconciliation happened (LastReconcileTime should be updated)
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+				if initialReconcileTime != nil {
+					g.Expect(created.Status.LastReconcileTime).ToNot(BeNil())
+					g.Expect(created.Status.LastReconcileTime.After(initialReconcileTime.Time)).To(BeTrue(),
+						"LastReconcileTime should be updated after child resource change")
+				}
+			}, timeout*2, interval).Should(Succeed())
+		})
 	})
 
 	Describe("Finalizer cleanup logic", func() {
