@@ -288,11 +288,50 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, nil // Don't requeue invalid spec
 	}
 
-	// Determine if we should reconcile based on change detection
-	shouldReconcile, nextCheckInterval := r.shouldReconcile(ctx, dbqr, log, pollInterval)
+	// Determine if we should do a full reconciliation based on change detection
+	shouldFullReconcile, nextCheckInterval := r.shouldReconcile(ctx, dbqr, log, pollInterval)
 
-	if !shouldReconcile {
-		log.V(1).Info("No changes detected, skipping reconciliation", "nextCheck", nextCheckInterval)
+	// Even if we skip full reconciliation, we should still check child resource status updates
+	// This ensures that child resource changes trigger status updates in the database
+	if !shouldFullReconcile {
+		log.Info("Skipping full reconciliation, but checking for child status updates", "nextCheck", nextCheckInterval, "managedResourceCount", len(dbqr.Status.ManagedResources))
+		
+		// If we have managed resources, check for status updates
+		if len(dbqr.Status.ManagedResources) > 0 {
+			// Collect managed resources for status update check
+			var managedChildren []*unstructured.Unstructured
+			for _, resID := range dbqr.Status.ManagedResources {
+				// Format: group/version/kind/namespace/name
+				parts := strings.Split(resID, "/")
+				if len(parts) < 5 {
+					log.Error(fmt.Errorf("invalid resource ID format"), "Cannot parse managed resource ID", "resID", resID)
+					continue
+				}
+				group, version, kind := parts[0], parts[1], parts[2]
+				namespace, name := parts[3], parts[4]
+				
+				obj := &unstructured.Unstructured{}
+				obj.SetGroupVersionKind(schema.GroupVersionKind{Group: group, Version: version, Kind: kind})
+				if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, obj); err != nil {
+					if !apierrors.IsNotFound(err) {
+						log.Error(err, "Failed to get managed resource for status check", "resID", resID)
+					}
+					continue
+				}
+				managedChildren = append(managedChildren, obj)
+			}
+			
+			// Get DB config and update status for child resources
+			if len(managedChildren) > 0 {
+				dbConfig, err := r.getDBConfig(ctx, dbqr)
+				if err != nil {
+					log.Error(err, "Failed to get DB config for status update check")
+				} else {
+					r.updateStatusForChildResources(ctx, dbqr, managedChildren, dbConfig)
+				}
+			}
+		}
+		
 		return ctrl.Result{RequeueAfter: nextCheckInterval}, nil
 	}
 
@@ -729,6 +768,7 @@ func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.C
 }
 
 // updateStatusForChildResources checks all child resources and updates the parent status if any child has changed state.
+// It only processes resources whose resourceVersion has changed since the last check to avoid redundant database updates.
 func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, children []*unstructured.Unstructured, dbConfig map[string]string) {
 	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
 	log.Info("Status update: entry", "numChildren", len(children), "templateSet", dbqr.Spec.StatusUpdateQueryTemplate != "")
@@ -736,8 +776,37 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 		log.Info("Status update: no template set, skipping")
 		return
 	}
+
+	// Initialize the ResourceVersions map if it doesn't exist
+	if dbqr.Status.ResourceVersions == nil {
+		dbqr.Status.ResourceVersions = make(map[string]string)
+	}
+
+	updatedCount := 0
+	skippedCount := 0
+
 	for _, obj := range children {
-		log.Info("Attempting status update for child resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+		resourceKey := getObjectKey(obj)
+		currentVersion := obj.GetResourceVersion()
+		lastSeenVersion, exists := dbqr.Status.ResourceVersions[resourceKey]
+
+		// Skip if we've already processed this exact version
+		if exists && lastSeenVersion == currentVersion {
+			log.V(1).Info("Skipping status update - resource version unchanged", 
+				"GVK", obj.GroupVersionKind(), 
+				"Name", obj.GetName(), 
+				"resourceVersion", currentVersion)
+			skippedCount++
+			continue
+		}
+
+		log.Info("Processing status update for child resource", 
+			"GVK", obj.GroupVersionKind(), 
+			"Namespace", obj.GetNamespace(), 
+			"Name", obj.GetName(),
+			"previousVersion", lastSeenVersion,
+			"currentVersion", currentVersion)
+
 		dbClient, err := r.getOrCreateDBClient(ctx, dbqr, dbConfig)
 		if err != nil {
 			log.Error(err, "Failed to get database client for status update", "GVK", obj.GroupVersionKind(), "Name", obj.GetName())
@@ -764,9 +833,14 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 			log.Error(err, "Failed to execute status update query (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName(), "query", queryBuffer.String())
 		} else {
 			log.Info("Successfully updated status in database (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName(), "query", queryBuffer.String())
+			// Update the tracked resource version after successful update
+			dbqr.Status.ResourceVersions[resourceKey] = currentVersion
+			updatedCount++
 			setCondition(dbqr, ConditionReconciled, metav1.ConditionTrue, "ChildResourceChanged", "Status updated due to child resource event")
 		}
 	}
+
+	log.Info("Status update: complete", "updated", updatedCount, "skipped", skippedCount, "total", len(children))
 }
 
 // getObjectKey creates a unique string identifier for a Kubernetes object.

@@ -147,6 +147,12 @@ type DatabaseQueryResourceStatus struct {
 	// LastReconcileTime tracks when we last ran a full reconciliation.
 	// +optional
 	LastReconcileTime *metav1.Time `json:"lastReconcileTime,omitempty"`
+
+	// ResourceVersions tracks the last observed resourceVersion for each managed resource.
+	// This is used to avoid redundant status updates for resources that haven't changed.
+	// Map key format: group/version/kind/namespace/name
+	// +optional
+	ResourceVersions map[string]string `json:"resourceVersions,omitempty"`
 }
 
 //+kubebuilder:object:root=true
