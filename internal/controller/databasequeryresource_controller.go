@@ -209,7 +209,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		if hasFinalizer {
 			log.Info("DatabaseQueryResource is being deleted, cleaning up managed resources")
 			// Collect all managed child resources
-			allChildResources, err := r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
+			allChildResources, err := r.collectAllChildResources(ctx, dbqr)
 			if err != nil {
 				log.Error(err, "Failed to collect child resources for deletion cleanup")
 				return ctrl.Result{}, err
@@ -332,6 +332,10 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 						now := metav1.Now()
 						dbqr.Status.LastReconcileTime = &now
 						log.Info("Updated LastReconcileTime due to child status updates", "updatedChildren", updated)
+                        // Persist the status change so tests observing the CR see the updated timestamp
+                        if err := r.Status().Update(ctx, dbqr); err != nil {
+                            log.Error(err, "Failed to persist LastReconcileTime after child status updates")
+                        }
 					}
 				}
 			}
@@ -478,7 +482,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 
 	// Collect all child resources for pruning (same-namespace only)
 	var pruneErrors []string
-	allChildResources, err := r.collectAllChildResources(ctx, dbqr, r.OwnedGVKs)
+	allChildResources, err := r.collectAllChildResources(ctx, dbqr)
 	if err != nil {
 		log.Error(err, "Failed to collect child resources")
 	}
@@ -732,7 +736,7 @@ func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Contex
 }
 
 // collectAllChildResources lists all resources managed by the CR and returns them, but does not delete anything.
-func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, ownedGVKs []schema.GroupVersionKind) ([]*unstructured.Unstructured, error) {
+func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource) ([]*unstructured.Unstructured, error) {
 	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
 	var allChildren []*unstructured.Unstructured
 	for _, resID := range dbqr.Status.ManagedResources {
