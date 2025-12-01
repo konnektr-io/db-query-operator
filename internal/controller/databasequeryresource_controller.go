@@ -327,7 +327,12 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 				if err != nil {
 					log.Error(err, "Failed to get DB config for status update check")
 				} else {
-					r.updateStatusForChildResources(ctx, dbqr, managedChildren, dbConfig)
+					updated := r.updateStatusForChildResources(ctx, dbqr, managedChildren, dbConfig)
+					if updated > 0 {
+						now := metav1.Now()
+						dbqr.Status.LastReconcileTime = &now
+						log.Info("Updated LastReconcileTime due to child status updates", "updatedChildren", updated)
+					}
 				}
 			}
 		}
@@ -523,7 +528,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	}
 
 	// Check for child resource state changes and update status if needed
-	r.updateStatusForChildResources(ctx, dbqr, managedChildren, dbConfig)
+	_ = r.updateStatusForChildResources(ctx, dbqr, managedChildren, dbConfig)
 
 	// Update Status
 	finalErrors := append(rowProcessingErrors, pruneErrors...)
@@ -769,12 +774,12 @@ func (r *DatabaseQueryResourceReconciler) collectAllChildResources(ctx context.C
 
 // updateStatusForChildResources checks all child resources and updates the parent status if any child has changed state.
 // It only processes resources whose resourceVersion has changed since the last check to avoid redundant database updates.
-func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, children []*unstructured.Unstructured, dbConfig map[string]string) {
+func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, children []*unstructured.Unstructured, dbConfig map[string]string) int {
 	log := r.Log.WithValues("DatabaseQueryResource", types.NamespacedName{Name: dbqr.Name, Namespace: dbqr.Namespace})
 	log.Info("Status update: entry", "numChildren", len(children), "templateSet", dbqr.Spec.StatusUpdateQueryTemplate != "")
 	if dbqr.Spec.StatusUpdateQueryTemplate == "" {
 		log.Info("Status update: no template set, skipping")
-		return
+		return 0
 	}
 
 	// Initialize the ResourceVersions map if it doesn't exist
@@ -841,6 +846,7 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 	}
 
 	log.Info("Status update: complete", "updated", updatedCount, "skipped", skippedCount, "total", len(children))
+	return updatedCount
 }
 
 // getObjectKey creates a unique string identifier for a Kubernetes object.
