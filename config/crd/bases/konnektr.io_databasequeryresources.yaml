@@ -264,6 +264,14 @@ spec:
                   spec that was last processed.
                 format: int64
                 type: integer
+              resourceVersions:
+                additionalProperties:
+                  type: string
+                description: |-
+                  ResourceVersions tracks the last observed resourceVersion for each managed resource.
+                  This is used to avoid redundant status updates for resources that haven't changed.
+                  Map key format: group/version/kind/namespace/name
+                type: object
             type: object
         type: object
     served: true
