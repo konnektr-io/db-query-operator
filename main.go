@@ -71,11 +71,24 @@ func main() {
 		"Duration that the acting controlplane will retry refreshing leadership before giving up (10s by default)")
 	flag.DurationVar(&leaderElectionRetryPeriod, "leader-election-retry-period", 5*time.Second,
 		"Duration the LeaderElector clients should wait between tries of actions (2s by default)")
+	
+	// Configure zap logger options
 	opts := zap.Options{
 		Development: true, // Use true for more verbose logs during development
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	// Allow LOG_LEVEL environment variable to override (e.g., "debug", "info", "error")
+	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
+		setupLog.Info("Setting log level from LOG_LEVEL environment variable", "level", logLevel)
+		// Note: zap level is set via --zap-log-level flag, but we can override Development mode
+		if logLevel == "debug" {
+			opts.Development = true
+		} else {
+			opts.Development = false
+		}
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
