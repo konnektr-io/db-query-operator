@@ -352,8 +352,10 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		log.Error(err, "Failed to get database configuration")
 		setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "SecretError", err.Error())
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Failed to get DB configuration")
-		// Requeue faster if secret might be missing/fixed
-		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
+		// Requeue after 30s if secret might be missing/fixed, but don't wait longer than pollInterval
+		retryInterval := min(pollInterval, 30 * time.Second)
+		log.Info("Failed to get database configuration, will retry", "retryAfter", retryInterval)
+		return ctrl.Result{RequeueAfter: retryInterval}, nil
 	}
 
 	// Select and connect to the appropriate database client
@@ -362,7 +364,10 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		log.Error(err, "Failed to get database client")
 		setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "DBClientError", err.Error())
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Failed to create/connect DB client")
-		return ctrl.Result{}, nil
+		// Requeue after 30s if secret might be missing/fixed, but don't wait longer than pollInterval
+		retryInterval := min(pollInterval, 30 * time.Second)
+		log.Info("Database connection failed, will retry", "retryAfter", retryInterval)
+		return ctrl.Result{RequeueAfter: retryInterval}, nil
 	}
 	defer dbClient.Close(ctx)
 	log.Info("Successfully connected to database", "host", dbConfig["host"], "db", dbConfig["dbname"])

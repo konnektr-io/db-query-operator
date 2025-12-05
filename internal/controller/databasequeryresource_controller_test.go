@@ -1010,3 +1010,139 @@ func toString(val interface{}) string {
 		return fmt.Sprintf("%v", v)
 	}
 }
+
+var _ = Describe("Database connection retry behavior", func() {
+	const (
+		ResourceNamespace = "default"
+		timeout           = time.Second * 30
+		interval          = time.Millisecond * 250
+	)
+
+	It("should automatically retry and recover when database becomes available after connection failure", func() {
+		ctx := context.Background()
+
+		// Track connection attempts
+		connectionAttempts := 0
+		var shouldFail bool = true
+
+		// Mock that initially fails, then succeeds
+		TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
+			connectionAttempts++
+			if shouldFail {
+				return nil, fmt.Errorf("failed to connect to database: connection refused")
+			}
+			// After first attempt, allow connection to succeed
+			mock := &util.MockDatabaseClient{
+				Rows:    []util.RowResult{{"id": 300}},
+				Columns: []string{"id"},
+			}
+			return mock, nil
+		}
+
+		// Create secret
+		dummySecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "retry-secret",
+				Namespace: ResourceNamespace,
+			},
+			Data: map[string][]byte{
+				"host":     []byte("localhost"),
+				"port":     []byte("5432"),
+				"username": []byte("testuser"),
+				"password": []byte("testpass"),
+				"dbname":   []byte("testdb"),
+				"sslmode":  []byte("disable"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, dummySecret)).To(Succeed())
+
+		// Create DatabaseQueryResource
+		dbqr := &databasev1alpha1.DatabaseQueryResource{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "retry-dbqr",
+				Namespace: ResourceNamespace,
+			},
+			Spec: databasev1alpha1.DatabaseQueryResourceSpec{
+				PollInterval: "2m", // Long interval to ensure we're testing retry, not regular polling
+				Prune:        ptrBool(true),
+				Database: databasev1alpha1.DatabaseSpec{
+					Type: "postgres",
+					ConnectionSecretRef: databasev1alpha1.DatabaseConnectionSecretRef{
+						Name:      "retry-secret",
+						Namespace: ResourceNamespace,
+					},
+				},
+				Query: "SELECT 300 as id",
+				Template: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: retry-test-{{ .Row.id }}
+  namespace: default
+data:
+  status: "created"`,
+			},
+		}
+		Expect(k8sClient.Create(ctx, dbqr)).To(Succeed())
+
+		lookupKey := types.NamespacedName{Name: "retry-dbqr", Namespace: ResourceNamespace}
+		created := &databasev1alpha1.DatabaseQueryResource{}
+
+		// First reconciliation should fail with DBConnectionFailed
+		By("Verifying initial connection failure")
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+			g.Expect(created.Status.Conditions).NotTo(BeEmpty())
+			
+			// Find the DBConnected condition
+			var dbConnected *metav1.Condition
+			for i := range created.Status.Conditions {
+				if created.Status.Conditions[i].Type == ConditionDBConnected {
+					dbConnected = &created.Status.Conditions[i]
+					break
+				}
+			}
+			g.Expect(dbConnected).NotTo(BeNil(), "DBConnected condition should exist")
+			g.Expect(dbConnected.Status).To(Equal(metav1.ConditionFalse), "DBConnected should be False")
+			g.Expect(dbConnected.Reason).To(Equal("DBClientError"), "Reason should be DBClientError")
+		}, timeout, interval).Should(Succeed())
+
+		// Verify at least one connection attempt was made
+		Expect(connectionAttempts).To(BeNumerically(">=", 1), "Should have attempted to connect at least once")
+
+		// Now "fix" the database connection
+		shouldFail = false
+
+		// Controller should automatically retry and succeed within the retry interval (30s)
+		By("Waiting for automatic retry and recovery")
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+			
+			// Find the Reconciled condition
+			var reconciled *metav1.Condition
+			for i := range created.Status.Conditions {
+				if created.Status.Conditions[i].Type == ConditionReconciled {
+					reconciled = &created.Status.Conditions[i]
+					break
+				}
+			}
+			g.Expect(reconciled).NotTo(BeNil(), "Reconciled condition should exist")
+			g.Expect(reconciled.Status).To(Equal(metav1.ConditionTrue), "Reconciled should be True after recovery")
+			g.Expect(reconciled.Reason).To(Equal("Success"), "Reason should be Success")
+			
+			// Verify LastPollTime was updated
+			g.Expect(created.Status.LastPollTime).NotTo(BeNil(), "LastPollTime should be set after successful reconciliation")
+		}, timeout, interval).Should(Succeed())
+
+		// Verify the ConfigMap was created after recovery
+		cmName := "retry-test-300"
+		cmLookup := types.NamespacedName{Name: cmName, Namespace: ResourceNamespace}
+		createdCM := &corev1.ConfigMap{}
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
+			g.Expect(createdCM.Data["status"]).To(Equal("created"))
+		}, timeout, interval).Should(Succeed())
+
+		// Verify multiple connection attempts were made (initial failure + retry)
+		Expect(connectionAttempts).To(BeNumerically(">=", 2), "Should have retried connection after initial failure")
+	})
+})
