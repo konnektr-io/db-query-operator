@@ -866,8 +866,6 @@ func getObjectKey(obj client.Object) string {
 	name := obj.GetName()
 	// Format: group/version/kind/namespace/name
 	key := fmt.Sprintf("%s/%s/%s/%s/%s", gvk.Group, gvk.Version, kind, ns, name)
-	log := log.Log.WithValues("func", "getObjectKey")
-	log.Info("Constructed managed resource key", "key", key, "group", gvk.Group, "version", gvk.Version, "kind", kind, "namespace", ns, "name", name)
 	return key
 }
 
@@ -977,17 +975,17 @@ func (r *DatabaseQueryResourceReconciler) shouldReconcile(
 	now := time.Now()
 
 	// Force full reconciliation if we haven't reconciled within pollInterval
-	if dbqr.Status.LastReconcileTime != nil {
-		timeSinceLastReconcile := now.Sub(dbqr.Status.LastReconcileTime.Time)
-		if timeSinceLastReconcile >= pollInterval {
+	if dbqr.Status.LastPollTime != nil {
+		timeSinceLastPoll := now.Sub(dbqr.Status.LastPollTime.Time)
+		if timeSinceLastPoll >= pollInterval {
 			log.V(1).Info("Full reconciliation interval reached",
-				"timeSinceLastReconcile", timeSinceLastReconcile,
+				"timeSinceLastPoll", timeSinceLastPoll,
 				"pollInterval", pollInterval)
 			return true, pollInterval
 		}
 	} else {
-		// First run - always reconcile
-		log.Info("First reconciliation run")
+		// First run (or never successfully polled) - always reconcile
+		log.Info("First reconciliation run (or no successful poll recorded)")
 		return true, pollInterval
 	}
 
