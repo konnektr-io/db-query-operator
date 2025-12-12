@@ -966,6 +966,12 @@ func (r *DatabaseQueryResourceReconciler) shouldReconcile(
 	pollInterval time.Duration,
 ) (bool, time.Duration) {
 
+	// Always force full reconciliation if the CR's generation has changed (spec/metadata updated)
+	if dbqr.Status.ObservedGeneration < dbqr.Generation {
+		log.Info("CR generation changed, forcing full reconciliation", "ObservedGeneration", dbqr.Status.ObservedGeneration, "CurrentGeneration", dbqr.Generation)
+		return true, pollInterval
+	}
+
 	// If change detection is not enabled, always reconcile at pollInterval
 	if dbqr.Spec.ChangeDetection == nil || !dbqr.Spec.ChangeDetection.Enabled {
 		return true, pollInterval
