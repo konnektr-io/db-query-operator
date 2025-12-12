@@ -731,9 +731,19 @@ func (r *DatabaseQueryResourceReconciler) pruneStaleResources(ctx context.Contex
 					errors = append(errors, fmt.Sprintf("delete %s: %v", objKey, err))
 				} else {
 					log.Info("Resource already deleted (NotFound)", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
+					// Clean up the resource version entry even if resource is already gone
+					if dbqr.Status.ResourceVersions != nil {
+						delete(dbqr.Status.ResourceVersions, objKey)
+						log.Info("Removed resource version entry for already-deleted resource", "objectKey", objKey)
+					}
 				}
 			} else {
 				log.Info("Successfully pruned resource", "GVK", item.GroupVersionKind(), "Namespace", item.GetNamespace(), "Name", item.GetName())
+				// Clean up the resource version entry after successful deletion
+				if dbqr.Status.ResourceVersions != nil {
+					delete(dbqr.Status.ResourceVersions, objKey)
+					log.Info("Removed resource version entry for pruned resource", "objectKey", objKey)
+				}
 			}
 		}
 	}
@@ -955,6 +965,12 @@ func (r *DatabaseQueryResourceReconciler) shouldReconcile(
 	log logr.Logger,
 	pollInterval time.Duration,
 ) (bool, time.Duration) {
+
+	// Always force full reconciliation if the CR's generation has changed (spec/metadata updated)
+	if dbqr.Status.ObservedGeneration < dbqr.Generation {
+		log.Info("CR generation changed, forcing full reconciliation", "ObservedGeneration", dbqr.Status.ObservedGeneration, "CurrentGeneration", dbqr.Generation)
+		return true, pollInterval
+	}
 
 	// If change detection is not enabled, always reconcile at pollInterval
 	if dbqr.Spec.ChangeDetection == nil || !dbqr.Spec.ChangeDetection.Enabled {
