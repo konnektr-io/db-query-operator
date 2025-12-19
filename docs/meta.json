@@ -1,7 +1,8 @@
 {
     "title": "DB Query Operator",
     "icon": "Database",
-    "description": "Kubernetes operator for managing resources based on database query results",
+    "description": "Kubernetes operator for database-driven deployments",
+    "root": true,
     "pages": [
         "index",
         "getting-started",
