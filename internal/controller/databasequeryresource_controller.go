@@ -485,17 +485,17 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		managedResourceKeys[resourceKey] = true
 	}
 
-	// Collect all child resources for pruning (same-namespace only)
 	var pruneErrors []string
-	allChildResources, err := r.collectAllChildResources(ctx, dbqr)
-	if err != nil {
-		log.Error(err, "Failed to collect child resources")
-	}
-	log.Info("Collected child resources for pruning", "count", len(allChildResources))
-	for _, obj := range allChildResources {
-		log.Info("Collected child resource for pruning", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
-	}
 	if dbqr.Spec.GetPrune() {
+		// Collect all child resources for pruning
+		allChildResources, err := r.collectAllChildResources(ctx, dbqr)
+		if err != nil {
+			log.Error(err, "Failed to collect child resources")
+		}
+		log.Info("Collected child resources for pruning", "count", len(allChildResources))
+		for _, obj := range allChildResources {
+			log.Info("Collected child resource for pruning", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+		}
 		log.Info("Pruning enabled, checking for stale resources")
 		pruneErrors = r.pruneStaleResources(ctx, dbqr, managedResourceKeys, allChildResources)
 		if len(pruneErrors) > 0 {
