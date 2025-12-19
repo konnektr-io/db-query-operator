@@ -4,7 +4,7 @@
     "description": "Kubernetes operator for database-driven deployments",
     "root": true,
     "pages": [
-        "index",
+        "introduction",
         "getting-started",
         "core-concepts",
         "installation",
