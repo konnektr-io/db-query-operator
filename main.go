@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -79,15 +81,25 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	// Allow LOG_LEVEL environment variable to override (e.g., "debug", "info", "error")
+	// Allow LOG_LEVEL environment variable to override (e.g., "debug", "info", "warn", "error")
 	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
-		setupLog.Info("Setting log level from LOG_LEVEL environment variable", "level", logLevel)
-		// Note: zap level is set via --zap-log-level flag, but we can override Development mode
-		if logLevel == "debug" {
+		var zapLevel zapcore.Level
+		switch strings.ToLower(logLevel) {
+		case "debug":
+			zapLevel = zapcore.DebugLevel
 			opts.Development = true
-		} else {
-			opts.Development = false
+		case "info":
+			zapLevel = zapcore.InfoLevel
+		case "warn", "warning":
+			zapLevel = zapcore.WarnLevel
+		case "error":
+			zapLevel = zapcore.ErrorLevel
+		default:
+			setupLog.Info("Unknown LOG_LEVEL value, defaulting to info", "level", logLevel)
+			zapLevel = zapcore.InfoLevel
 		}
+		opts.Level = zapLevel
+		setupLog.Info("Setting log level from LOG_LEVEL environment variable", "level", logLevel, "zapLevel", zapLevel)
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))

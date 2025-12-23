@@ -994,7 +994,7 @@ func (r *DatabaseQueryResourceReconciler) shouldReconcile(
 	if dbqr.Status.LastPollTime != nil {
 		timeSinceLastPoll := now.Sub(dbqr.Status.LastPollTime.Time)
 		if timeSinceLastPoll >= pollInterval {
-			log.V(1).Info("Full reconciliation interval reached",
+			log.Info("Full reconciliation interval reached",
 				"timeSinceLastPoll", timeSinceLastPoll,
 				"pollInterval", pollInterval)
 			return true, pollInterval
