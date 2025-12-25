@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	databasev1alpha1 "github.com/konnektr-io/db-query-operator/api/v1alpha1"
@@ -1022,16 +1024,19 @@ var _ = Describe("Database connection retry behavior", func() {
 		ctx := context.Background()
 
 		// Track connection attempts
-		connectionAttempts := 0
+    	var connectionAttempts int32 = 0
 		var shouldFail bool = true
+    	var shouldFailMu sync.Mutex
 
 		// Mock that initially fails, then succeeds
 		TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
-			connectionAttempts++
-			if shouldFail {
+        	atomic.AddInt32(&connectionAttempts, 1)
+			shouldFailMu.Lock()
+			fail := shouldFail
+			shouldFailMu.Unlock()
+			if fail {
 				return nil, fmt.Errorf("failed to connect to database: connection refused")
 			}
-			// After first attempt, allow connection to succeed
 			mock := &util.MockDatabaseClient{
 				Rows:    []util.RowResult{{"id": 300}},
 				Columns: []string{"id"},
@@ -1107,10 +1112,12 @@ data:
 		}, timeout, interval).Should(Succeed())
 
 		// Verify at least one connection attempt was made
-		Expect(connectionAttempts).To(BeNumerically(">=", 1), "Should have attempted to connect at least once")
+		Expect(atomic.LoadInt32(&connectionAttempts)).To(BeNumerically(">=", 1), "Should have attempted to connect at least once")
 
 		// Now "fix" the database connection
+		shouldFailMu.Lock()
 		shouldFail = false
+		shouldFailMu.Unlock()
 
 		// Controller should automatically retry and succeed within the retry interval (30s)
 		By("Waiting for automatic retry and recovery")
@@ -1143,6 +1150,6 @@ data:
 		}, timeout, interval).Should(Succeed())
 
 		// Verify multiple connection attempts were made (initial failure + retry)
-		Expect(connectionAttempts).To(BeNumerically(">=", 2), "Should have retried connection after initial failure")
+		Expect(atomic.LoadInt32(&connectionAttempts)).To(BeNumerically(">=", 2), "Should have retried connection after initial failure")
 	})
 })

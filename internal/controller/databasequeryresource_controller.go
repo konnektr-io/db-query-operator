@@ -12,7 +12,6 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/Masterminds/sprig/v3"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -386,8 +385,8 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	managedResourceKeys := make(map[string]bool) // Store keys (namespace/name) of resources created/updated in this cycle
 	var rowProcessingErrors []string
 
-	// Parse the template once
-	tmpl, err := template.New("resourceTemplate").Funcs(sprig.TxtFuncMap()).Parse(dbqr.Spec.Template)
+	// Parse the template once using local Helm-like FuncMap for full Helm template support
+	tmpl, err := template.New("resourceTemplate").Funcs(FuncMap()).Parse(dbqr.Spec.Template)
 	if err != nil {
 		log.Error(err, "Failed to parse resource template")
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "TemplateError", fmt.Sprintf("Invalid template: %v", err))
@@ -837,7 +836,7 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 			continue
 		}
 		defer dbClient.Close(ctx)
-		tmpl, err := template.New("statusUpdateQuery").Funcs(sprig.TxtFuncMap()).Parse(dbqr.Spec.StatusUpdateQueryTemplate)
+		tmpl, err := template.New("statusUpdateQuery").Funcs(FuncMap()).Parse(dbqr.Spec.StatusUpdateQueryTemplate)
 		if err != nil {
 			log.Error(err, "Failed to parse status update query template (child event)", "GVK", obj.GroupVersionKind(), "Name", obj.GetName(), "template", dbqr.Spec.StatusUpdateQueryTemplate)
 			continue
