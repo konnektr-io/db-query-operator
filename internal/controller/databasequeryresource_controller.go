@@ -547,6 +547,19 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	sort.Strings(managedResourcesList) // Sort for consistent status
 	dbqr.Status.ManagedResources = managedResourcesList
 
+	// Prune resourceVersions for resources that are no longer managed
+	if dbqr.Status.ResourceVersions != nil {
+		managedSet := make(map[string]struct{}, len(managedResourcesList))
+		for _, k := range managedResourcesList {
+			managedSet[k] = struct{}{}
+		}
+		for resKey := range dbqr.Status.ResourceVersions {
+			if _, ok := managedSet[resKey]; !ok {
+				delete(dbqr.Status.ResourceVersions, resKey)
+			}
+		}
+	}
+
 	if len(finalErrors) > 0 {
 		errMsg := strings.Join(finalErrors, "; ")
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "ProcessingError", truncateError(errMsg, 1024))
