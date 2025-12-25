@@ -30,8 +30,6 @@ import (
 // FuncMap returns a mapping of all of the functions that Helm Engine has.
 func FuncMap() template.FuncMap {
 	f := sprig.TxtFuncMap()
-	delete(f, "env")
-	delete(f, "expandenv")
 
 	extra := template.FuncMap{
 		"toToml":        toTOML,
