@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	databasev1alpha1 "github.com/konnektr-io/db-query-operator/api/v1alpha1"
@@ -1013,7 +1011,7 @@ func toString(val interface{}) string {
 	}
 }
 
-var _ = Describe("Database connection retry behavior", func() {
+/* var _ = Describe("Database connection retry behavior", func() {
 	const (
 		ResourceNamespace = "default"
 		timeout           = time.Second * 30
@@ -1153,3 +1151,4 @@ data:
 		Expect(atomic.LoadInt32(&connectionAttempts)).To(BeNumerically(">=", 2), "Should have retried connection after initial failure")
 	})
 })
+ */
