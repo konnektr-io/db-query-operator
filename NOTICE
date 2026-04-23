@@ -1,0 +1,44 @@
+db-query-operator
+Copyright 2026 Niko Raes
+
+This product is licensed under the Apache License, Version 2.0.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+---
+
+This product includes software developed by third parties:
+
+The Helm Authors (<https://helm.sh>)
+internal/controller/funcs.go is derived from Helm source code.
+Copyright The Helm Authors. Licensed under the Apache License, Version 2.0.
+<https://github.com/helm/helm>
+
+sigs.k8s.io/controller-runtime
+Copyright The Kubernetes Authors. Licensed under the Apache License, Version 2.0.
+<https://github.com/kubernetes-sigs/controller-runtime>
+
+k8s.io/api, k8s.io/apimachinery, k8s.io/client-go
+Copyright The Kubernetes Authors. Licensed under the Apache License, Version 2.0.
+<https://github.com/kubernetes/kubernetes>
+
+github.com/jackc/pgx
+Copyright Jack Christensen. Licensed under the MIT License.
+<https://github.com/jackc/pgx>
+
+github.com/Masterminds/sprig
+Copyright Masterminds. Licensed under the MIT License.
+<https://github.com/Masterminds/sprig>
+
+github.com/BurntSushi/toml
+Copyright The BurntSushi/toml Authors. Licensed under the MIT License.
+<https://github.com/BurntSushi/toml>
+
+go.uber.org/zap
+Copyright (c) 2016 Uber Technologies, Inc. Licensed under the MIT License.
+<https://github.com/uber-go/zap>
+
+sigs.k8s.io/yaml
+Copyright The Kubernetes Authors. Licensed under the MIT License.
+<https://github.com/kubernetes-sigs/yaml>
