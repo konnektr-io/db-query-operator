@@ -76,8 +76,8 @@ var _ = BeforeSuite(func() {
 	Expect(err).ToNot(HaveOccurred())
 
 	TestReconciler = &DatabaseQueryResourceReconciler{
-		Client: k8sManager.GetClient(),
-		Scheme: k8sManager.GetScheme(),
+		Client:    k8sManager.GetClient(),
+		Scheme:    k8sManager.GetScheme(),
 		OwnedGVKs: registeredGVKs,
 	}
 	err = TestReconciler.SetupWithManagerAndGVKs(k8sManager, registeredGVKs)

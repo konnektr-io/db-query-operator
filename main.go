@@ -33,8 +33,8 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 
-	gvkPattern string
-	registeredGVKs        []schema.GroupVersionKind
+	gvkPattern     string
+	registeredGVKs []schema.GroupVersionKind
 )
 
 func init() {
@@ -73,7 +73,7 @@ func main() {
 		"Duration that the acting controlplane will retry refreshing leadership before giving up (10s by default)")
 	flag.DurationVar(&leaderElectionRetryPeriod, "leader-election-retry-period", 5*time.Second,
 		"Duration the LeaderElector clients should wait between tries of actions (2s by default)")
-	
+
 	// Configure zap logger options
 	opts := zap.Options{
 		Development: true, // Use true for more verbose logs during development
@@ -154,9 +154,9 @@ func main() {
 	}
 
 	if err = (&controller.DatabaseQueryResourceReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Log:    ctrl.Log.WithName("controllers").WithName("DatabaseQueryResource"),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Log:       ctrl.Log.WithName("controllers").WithName("DatabaseQueryResource"),
 		OwnedGVKs: registeredGVKs,
 	}).SetupWithManagerAndGVKs(mgr, registeredGVKs); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DatabaseQueryResource")
