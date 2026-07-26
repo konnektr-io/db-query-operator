@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"text/template"
@@ -294,7 +295,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	// This ensures that child resource changes trigger status updates in the database
 	if !shouldFullReconcile {
 		log.Info("Skipping full reconciliation, but checking for child status updates", "nextCheck", nextCheckInterval, "managedResourceCount", len(dbqr.Status.ManagedResources))
-		
+
 		// If we have managed resources, check for status updates
 		if len(dbqr.Status.ManagedResources) > 0 {
 			// Collect managed resources for status update check
@@ -308,7 +309,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 				}
 				group, version, kind := parts[0], parts[1], parts[2]
 				namespace, name := parts[3], parts[4]
-				
+
 				obj := &unstructured.Unstructured{}
 				obj.SetGroupVersionKind(schema.GroupVersionKind{Group: group, Version: version, Kind: kind})
 				if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, obj); err != nil {
@@ -319,7 +320,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 				}
 				managedChildren = append(managedChildren, obj)
 			}
-			
+
 			// Get DB config and update status for child resources
 			if len(managedChildren) > 0 {
 				dbConfig, err := r.getDBConfig(ctx, dbqr)
@@ -331,15 +332,15 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 						now := metav1.Now()
 						dbqr.Status.LastReconcileTime = &now
 						log.Info("Updated LastReconcileTime due to child status updates", "updatedChildren", updated)
-                        // Persist the status change so tests observing the CR see the updated timestamp
-                        if err := r.Status().Update(ctx, dbqr); err != nil {
-                            log.Error(err, "Failed to persist LastReconcileTime after child status updates")
-                        }
+						// Persist the status change so tests observing the CR see the updated timestamp
+						if err := r.Status().Update(ctx, dbqr); err != nil {
+							log.Error(err, "Failed to persist LastReconcileTime after child status updates")
+						}
 					}
 				}
 			}
 		}
-		
+
 		return ctrl.Result{RequeueAfter: nextCheckInterval}, nil
 	}
 
@@ -352,7 +353,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "SecretError", err.Error())
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Failed to get DB configuration")
 		// Requeue after 30s if secret might be missing/fixed, but don't wait longer than pollInterval
-		retryInterval := min(pollInterval, 30 * time.Second)
+		retryInterval := min(pollInterval, 30*time.Second)
 		log.Info("Failed to get database configuration, will retry", "retryAfter", retryInterval)
 		return ctrl.Result{RequeueAfter: retryInterval}, nil
 	}
@@ -364,7 +365,7 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		setCondition(dbqr, ConditionDBConnected, metav1.ConditionFalse, "DBClientError", err.Error())
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "DBConnectionFailed", "Failed to create/connect DB client")
 		// Requeue after 30s if secret might be missing/fixed, but don't wait longer than pollInterval
-		retryInterval := min(pollInterval, 30 * time.Second)
+		retryInterval := min(pollInterval, 30*time.Second)
 		log.Info("Database connection failed, will retry", "retryAfter", retryInterval)
 		return ctrl.Result{RequeueAfter: retryInterval}, nil
 	}
@@ -828,17 +829,17 @@ func (r *DatabaseQueryResourceReconciler) updateStatusForChildResources(ctx cont
 
 		// Skip if we've already processed this exact version
 		if exists && lastSeenVersion == currentVersion {
-			log.V(1).Info("Skipping status update - resource version unchanged", 
-				"GVK", obj.GroupVersionKind(), 
-				"Name", obj.GetName(), 
+			log.V(1).Info("Skipping status update - resource version unchanged",
+				"GVK", obj.GroupVersionKind(),
+				"Name", obj.GetName(),
 				"resourceVersion", currentVersion)
 			skippedCount++
 			continue
 		}
 
-		log.Info("Processing status update for child resource", 
-			"GVK", obj.GroupVersionKind(), 
-			"Namespace", obj.GetNamespace(), 
+		log.Info("Processing status update for child resource",
+			"GVK", obj.GroupVersionKind(),
+			"Namespace", obj.GetNamespace(),
 			"Name", obj.GetName(),
 			"previousVersion", lastSeenVersion,
 			"currentVersion", currentVersion)
@@ -1078,13 +1079,21 @@ func (r *DatabaseQueryResourceReconciler) detectChanges(
 		lastCheckTime = time.Unix(0, 0)
 	}
 
-	// Execute query - we need to use raw query with parameters
-	// Since the DatabaseClient interface uses Query(ctx, query string), we need to format it
-	// For PostgreSQL, we'll format the timestamp parameter directly
+	// Sanitize identifiers to prevent SQL injection
+	// Table names and column names cannot use bind parameters, so we validate and quote them
+	safeTableName, err := sanitizePGIdentifier(dbqr.Spec.ChangeDetection.TableName)
+	if err != nil {
+		return false, fmt.Errorf("invalid table name in change detection config: %w", err)
+	}
+	safeTimestampColumn, err := sanitizePGIdentifier(dbqr.Spec.ChangeDetection.TimestampColumn)
+	if err != nil {
+		return false, fmt.Errorf("invalid timestamp column in change detection config: %w", err)
+	}
+
 	formattedQuery := fmt.Sprintf(
 		"SELECT 1 FROM %s WHERE %s > '%s' LIMIT 1",
-		dbqr.Spec.ChangeDetection.TableName,
-		dbqr.Spec.ChangeDetection.TimestampColumn,
+		safeTableName,
+		safeTimestampColumn,
 		lastCheckTime.Format(time.RFC3339Nano),
 	)
 
@@ -1101,4 +1110,58 @@ func (r *DatabaseQueryResourceReconciler) detectChanges(
 	hasChanges := len(rows) > 0
 
 	return hasChanges, nil
+}
+
+// validPGUnquotedID matches a single valid unquoted PostgreSQL identifier.
+// Must start with a letter or underscore, followed by alphanumeric or underscore.
+var validPGUnquotedID = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_$]*$`)
+
+// quotePGIdentifier quotes a single PostgreSQL identifier part, escaping as needed.
+func quotePGIdentifier(part string) (string, error) {
+	if part == "" {
+		return "", fmt.Errorf("identifier part must not be empty")
+	}
+	if strings.ContainsAny(part, "\x00") {
+		return "", fmt.Errorf("identifier contains null bytes")
+	}
+	escaped := strings.ReplaceAll(part, `"`, `""`)
+	return `"` + escaped + `"`, nil
+}
+
+// sanitizePGIdentifier validates and quotes a PostgreSQL identifier (possibly schema-qualified)
+// to prevent SQL injection. Accepts already-quoted parts or unquoted identifiers.
+func sanitizePGIdentifier(identifier string) (string, error) {
+	if identifier == "" {
+		return "", fmt.Errorf("identifier must not be empty")
+	}
+
+	parts := strings.Split(identifier, ".")
+	var result []string
+	for _, part := range parts {
+		if part == "" {
+			return "", fmt.Errorf("identifier contains empty part")
+		}
+		// Check if already quoted - pass through as-is (user-specified quoting)
+		if strings.HasPrefix(part, `"`) && strings.HasSuffix(part, `"`) && len(part) >= 2 {
+			inner := part[1 : len(part)-1]
+			if inner == "" {
+				return "", fmt.Errorf("quoted identifier part must not be empty")
+			}
+			if strings.ContainsAny(inner, "\x00") {
+				return "", fmt.Errorf("quoted identifier contains null bytes")
+			}
+			result = append(result, part)
+		} else {
+			// Unquoted part - must match valid identifier pattern
+			if !validPGUnquotedID.MatchString(part) {
+				return "", fmt.Errorf("invalid identifier part %q: must contain only alphanumeric characters and underscores", part)
+			}
+			quoted, err := quotePGIdentifier(part)
+			if err != nil {
+				return "", err
+			}
+			result = append(result, quoted)
+		}
+	}
+	return strings.Join(result, "."), nil
 }

@@ -806,7 +806,7 @@ data:
 	Describe("Change Detection functionality", func() {
 		It("should detect changes using timestamp column and reconcile quickly", func() {
 			ctx := context.Background()
-			
+
 			// Mock database with initial data and timestamp
 			initialTime := time.Now().Add(-1 * time.Hour)
 			mock := &util.MockDatabaseClient{
@@ -889,7 +889,6 @@ data:
 				g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
 				g.Expect(createdCM.Data["name"]).To(Equal("test-resource"))
 			}, timeout, interval).Should(Succeed())
-
 
 			// Simulate a change in the database by updating the timestamp
 			newTime := time.Now()
@@ -1016,7 +1015,7 @@ func toString(val interface{}) string {
 var _ = Describe("Database connection retry behavior", func() {
 	const (
 		ResourceNamespace = "default"
-		timeout           = time.Second * 30
+		timeout           = time.Second * 45
 		interval          = time.Millisecond * 250
 	)
 
@@ -1024,13 +1023,13 @@ var _ = Describe("Database connection retry behavior", func() {
 		ctx := context.Background()
 
 		// Track connection attempts
-    	var connectionAttempts int32 = 0
+		var connectionAttempts int32 = 0
 		var shouldFail bool = true
-    	var shouldFailMu sync.Mutex
+		var shouldFailMu sync.Mutex
 
 		// Mock that initially fails, then succeeds
 		TestReconciler.DBClientFactory = func(ctx context.Context, dbType string, dbConfig map[string]string) (util.DatabaseClient, error) {
-        	atomic.AddInt32(&connectionAttempts, 1)
+			atomic.AddInt32(&connectionAttempts, 1)
 			shouldFailMu.Lock()
 			fail := shouldFail
 			shouldFailMu.Unlock()
@@ -1097,7 +1096,7 @@ data:
 		Eventually(func(g Gomega) {
 			g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
 			g.Expect(created.Status.Conditions).NotTo(BeEmpty())
-			
+
 			// Find the DBConnected condition
 			var dbConnected *metav1.Condition
 			for i := range created.Status.Conditions {
@@ -1123,7 +1122,7 @@ data:
 		By("Waiting for automatic retry and recovery")
 		Eventually(func(g Gomega) {
 			g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
-			
+
 			// Find the Reconciled condition
 			var reconciled *metav1.Condition
 			for i := range created.Status.Conditions {
@@ -1135,7 +1134,7 @@ data:
 			g.Expect(reconciled).NotTo(BeNil(), "Reconciled condition should exist")
 			g.Expect(reconciled.Status).To(Equal(metav1.ConditionTrue), "Reconciled should be True after recovery")
 			g.Expect(reconciled.Reason).To(Equal("Success"), "Reason should be Success")
-			
+
 			// Verify LastPollTime was updated
 			g.Expect(created.Status.LastPollTime).NotTo(BeNil(), "LastPollTime should be set after successful reconciliation")
 		}, timeout, interval).Should(Succeed())

@@ -139,3 +139,43 @@ func TestShouldReconcile_ObservedGenerationForcesReconcile(t *testing.T) {
 	shouldFullReconcile, _ := r.shouldReconcile(context.Background(), dbqr, logr.Discard(), pollInterval)
 	g.Expect(shouldFullReconcile).To(BeTrue(), "Should trigger full reconciliation when ObservedGeneration < Generation")
 }
+
+func TestSanitizePGIdentifier(t *testing.T) {
+	tests := []struct {
+		name       string
+		identifier string
+		want       string
+		wantErr    bool
+	}{
+		{"simple table name", "users", `"users"`, false},
+		{"with underscore", "my_table", `"my_table"`, false},
+		{"with dollar sign", "my$table", `"my$table"`, false},
+		{"schema qualified", "public.users", `"public"."users"`, false},
+		{"already quoted", `"users"`, `"users"`, false},
+		{"already quoted with schema", `"public"."users"`, `"public"."users"`, false},
+		{"quoted with space", `"my table"`, `"my table"`, false},
+		{"quoted with embedded quote", `"my""table"`, `"my""table"`, false},
+		{"numeric start", "1table", "", true},
+		{"embedded double quote in unquoted", `my"table`, "", true},
+		{"special chars", "table;name", "", true},
+		{"SQL injection attempt", "users; DROP TABLE users", "", true},
+		{"empty string", "", "", true},
+		{"just a dot", ".", "", true},
+		{"dot at end", "table.", "", true},
+		{"dot at start", ".table", "", true},
+		{"unicode letters", "über", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			got, err := sanitizePGIdentifier(tt.identifier)
+			if tt.wantErr {
+				g.Expect(err).To(HaveOccurred())
+			} else {
+				g.Expect(err).ToNot(HaveOccurred())
+				g.Expect(got).To(Equal(tt.want))
+			}
+		})
+	}
+}

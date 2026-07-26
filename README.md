@@ -507,28 +507,13 @@ If the finalizer is not present, deleting the `DatabaseQueryResource` will **not
 
 ## Development
 
-1. **Prerequisites:** Ensure Go, Docker, `kubectl`, `controller-gen`, and access to a Kubernetes cluster are set up.
-2. **Clone:** `git clone <repository-url>`
-3. **Modify Code:** Make changes to the API (`api/v1alpha1/`) or controller (`internal/controller/`).
-4. **Regenerate Code:** After modifying API types or RBAC/CRD markers, run:
+See [DEVELOPER.md](DEVELOPER.md) for the complete developer guide covering:
 
-    ```bash
-    # Regenerate deepcopy methods for API types
-    controller-gen object paths=./api/v1alpha1
-
-    # Regenerate CRD and RBAC manifests
-    # Adjust paths if needed, especially on Windows: paths=./api/v1alpha1,./internal/controller
-    controller-gen rbac:roleName=manager-role crd webhook paths=./api/v1alpha1,./internal/controller output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
-    ```
-
-5. **Build:**
-
-    ```bash
-    go build ./...
-    # Or build the container image (see step 4 in Getting Started)
-    ```
-
-6. **Deploy:** Re-deploy the operator using the steps in "Getting Started".
+- **Prerequisites & setup** — Go, envtest (KUBEBUILDER_ASSETS), controller-gen
+- **Running tests** — unit tests, integration tests with envtest, and the full suite
+- **Project structure** — how the code is organized
+- **Code quality** — `go vet`, `go fmt`
+- **Making changes** — branching, testing, and PR workflow
 
 ## Contributing
 
