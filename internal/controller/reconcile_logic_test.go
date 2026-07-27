@@ -11,7 +11,10 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -138,6 +141,108 @@ func TestShouldReconcile_ObservedGenerationForcesReconcile(t *testing.T) {
 
 	shouldFullReconcile, _ := r.shouldReconcile(context.Background(), dbqr, logr.Discard(), pollInterval)
 	g.Expect(shouldFullReconcile).To(BeTrue(), "Should trigger full reconciliation when ObservedGeneration < Generation")
+}
+
+func TestFieldRemovalOnUpdate(t *testing.T) {
+	g := NewWithT(t)
+
+	scheme := runtime.NewScheme()
+	_ = databasev1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	// Use a real k8s resource (ConfigMap) for testing
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cm",
+			Namespace: "default",
+			Labels: map[string]string{
+				ManagedByLabel: "test-dbqr",
+			},
+			Annotations: map[string]string{
+				"existing-annotation": "should-survive",
+			},
+		},
+		Data: map[string]string{
+			"old-field":  "old-value",
+			"keep-field": "keep-value",
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+
+	// Retrieve the existing ConfigMap
+	got := &corev1.ConfigMap{}
+	err := fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-cm"}, got)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	// Verify old-field exists initially
+	g.Expect(got.Data).To(HaveKey("old-field"))
+	g.Expect(got.Data).To(HaveKey("keep-field"))
+
+	// Create the "desired" object (simulating what the template would produce)
+	// with old-field removed
+	desired := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cm",
+			Namespace: "default",
+			Labels: map[string]string{
+				ManagedByLabel: "test-dbqr",
+			},
+		},
+		Data: map[string]string{
+			"keep-field": "keep-value",
+		},
+	}
+
+	// Convert to unstructured for testing the update logic
+	desiredUnstructured := &unstructured.Unstructured{}
+	desiredUnstructured.Object, _ = runtime.DefaultUnstructuredConverter.ToUnstructured(desired)
+	desiredUnstructured.SetGroupVersionKind(schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"})
+
+	existingUnstructured := &unstructured.Unstructured{}
+	existingUnstructured.Object, _ = runtime.DefaultUnstructuredConverter.ToUnstructured(got)
+	existingUnstructured.SetGroupVersionKind(schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"})
+
+	// Simulate the update logic from the controller:
+	// Copy desired spec/data into existing, preserving system annotations
+	existingUnstructured.Object["data"] = desiredUnstructured.Object["data"]
+	existingUnstructured.SetLabels(desiredUnstructured.GetLabels())
+
+	// Merge annotations
+	existingAnns := existingUnstructured.GetAnnotations()
+	if existingAnns == nil {
+		existingAnns = make(map[string]string)
+	}
+	desiredAnns := desiredUnstructured.GetAnnotations()
+	if desiredAnns != nil {
+		for k, v := range desiredAnns {
+			existingAnns[k] = v
+		}
+	}
+	existingUnstructured.SetAnnotations(existingAnns)
+
+	// Apply via Update
+	err = fakeClient.Update(context.Background(), existingUnstructured)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	// Verify the update went through correctly
+	updated := &corev1.ConfigMap{}
+	err = fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-cm"}, updated)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	// The key assertion: old-field must be GONE after update
+	g.Expect(updated.Data).ToNot(HaveKey("old-field"),
+		"Field 'old-field' should be removed after update when it's absent from the desired state")
+	g.Expect(updated.Data).To(HaveKeyWithValue("keep-field", "keep-value"),
+		"Field 'keep-field' should be preserved")
+
+	// System annotations should survive
+	g.Expect(updated.Annotations).To(HaveKey("existing-annotation"),
+		"Existing system annotation should survive merge")
+
+	// Managed-by label should be set
+	g.Expect(updated.Labels).To(HaveKeyWithValue(ManagedByLabel, "test-dbqr"),
+		"Managed-by label should be set")
 }
 
 func TestSanitizePGIdentifier(t *testing.T) {
