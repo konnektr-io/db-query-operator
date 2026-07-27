@@ -460,21 +460,81 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 		}
 
 		if updateNeeded {
-			log.Info("Applying resource (update needed)", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+			log.Info("Checking resource for update", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 
-			// Set the last applied configuration before applying
-			if err := setLastAppliedConfig(obj); err != nil {
-				log.Error(err, "Failed to set last applied config", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
-				rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("last applied config error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
-				continue // Skip this resource
-			}
-
-			patchMethod := client.Apply
-			err = r.Patch(ctx, obj, patchMethod, client.FieldOwner(ControllerName), client.ForceOwnership)
+			// Fetch the existing resource to determine if it already exists
+			existing := &unstructured.Unstructured{}
+			existing.SetGroupVersionKind(obj.GroupVersionKind())
+			err := r.Get(ctx, client.ObjectKeyFromObject(obj), existing)
 			if err != nil {
-				log.Error(err, "Failed to apply (create/update) resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
-				rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("apply error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
-				continue // Skip this resource
+				if apierrors.IsNotFound(err) {
+					// Resource doesn't exist yet — create via Server-Side Apply
+					log.Info("Creating resource via SSA", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+					if err := setLastAppliedConfig(obj); err != nil {
+						log.Error(err, "Failed to set last applied config", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+						rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("last applied config error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
+						continue // Skip this resource
+					}
+					if err := r.Patch(ctx, obj, client.Apply, client.FieldOwner(ControllerName), client.ForceOwnership); err != nil {
+						log.Error(err, "Failed to create resource via SSA", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+						rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("create error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
+						continue // Skip this resource
+					}
+				} else {
+					log.Error(err, "Failed to get existing resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+					rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("get error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
+					continue // Skip this resource
+				}
+			} else {
+				// Resource exists — use Update() for a full replace.
+				// SSA (client.Apply) with unstructured objects doesn't reliably
+				// remove fields absent from the desired state (e.g. a spec.destination.server
+				// field removed from the template would persist in the live object).
+				// Update() replaces the entire spec, ensuring removed fields are cleaned up.
+				log.Info("Updating existing resource to replace fields", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+
+				// Replace spec and data with desired state
+				existing.Object["spec"] = obj.Object["spec"]
+				if obj.Object["data"] != nil {
+					existing.Object["data"] = obj.Object["data"]
+				} else {
+					delete(existing.Object, "data")
+				}
+
+				// Overwrite labels (includes ManagedByLabel)
+				existing.SetLabels(obj.GetLabels())
+
+				// Merge annotations: preserve existing system annotations,
+				// overlay or remove annotations from the desired template
+				existingAnns := existing.GetAnnotations()
+				if existingAnns == nil {
+					existingAnns = make(map[string]string)
+				}
+				desiredAnns := obj.GetAnnotations()
+				if desiredAnns != nil {
+					for k, v := range desiredAnns {
+						if v == "" {
+							delete(existingAnns, k)
+						} else {
+							existingAnns[k] = v
+						}
+					}
+				}
+				existing.SetAnnotations(existingAnns)
+
+				// Set the last applied configuration on the updated object
+				if err := setLastAppliedConfig(existing); err != nil {
+					log.Error(err, "Failed to set last applied config on existing resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+					rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("last applied config error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
+					continue // Skip this resource
+				}
+
+				// Full replace via Update() — this is the key fix.
+				if err := r.Update(ctx, existing); err != nil {
+					log.Error(err, "Failed to update resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
+					rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("update error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
+					continue // Skip this resource
+				}
 			}
 			log.Info("Successfully applied resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 		} else {
