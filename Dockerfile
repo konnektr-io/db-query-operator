@@ -23,10 +23,15 @@ COPY main.go main.go
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags="-w -s" -o manager main.go
 
 # Runtime Stage
-# Use a distroless image for a minimal attack surface
-FROM alpine:latest AS runtime
+# Use a distroless image for a minimal attack surface.
+# Pinned to a specific Alpine series (not floating `latest`, which drifted into
+# a vulnerable openssl build) — `alpine:3.24` carries the openssl 3.5.8-r0 fix
+# for CVE-2026-18798 / CVE-2026-75803 (Alpine security tracker: fixed).
+# `apk upgrade` at build time additionally guarantees the image always ships the
+# newest patched packages from the series repo, whatever the base layer contains.
+FROM alpine:3.24 AS runtime
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates && apk upgrade --no-cache
 
 WORKDIR /
 # Copy the compiled binary from the builder stage
