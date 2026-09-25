@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Go 1.26+** ([download](https://go.dev/dl/))
+- **Go 1.27+** ([download](https://go.dev/dl/))
 - **kubebuilder envtest** binaries (for integration tests)
 - **make** (for build targets)
 - Optional: a Kubernetes cluster for end-to-end testing
