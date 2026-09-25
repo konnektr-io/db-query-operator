@@ -1,0 +1,9 @@
+# This configuration teaches kustomize how to update the Issuer reference of the
+# Certificate when the name prefix is applied by the parent kustomization.
+nameReference:
+- kind: Issuer
+  group: cert-manager.io
+  fieldSpecs:
+  - kind: Certificate
+    group: cert-manager.io
+    path: spec/issuerRef/name

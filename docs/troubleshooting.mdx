@@ -284,6 +284,68 @@ map has no entry for key "missing_field"
 
 ---
 
+## Admission Webhook Errors
+
+### Error: "admission webhook ... denied the request"
+
+**Symptom**:
+```
+Error from server (Invalid): error when creating "resource.yaml": admission webhook
+"vdatabasequeryresource-v1alpha1.konnektr.io" denied the request:
+DatabaseQueryResource.konnektr.io "my-resource" is invalid:
+spec.pollInterval: Invalid value: "0s": must be greater than zero; a non-positive interval
+would poll the database continuously
+```
+
+**Cause**: the spec violates a rule enforced by the validating admission webhook. The message
+names the offending field and the reason; see
+[Configuration → Validation](/docs/configuration) for the full list.
+
+**Solutions**:
+
+- Fix the named field. The common ones:
+  - `pollInterval` must be a positive Go duration (`30s`, `5m`, `1h30m`).
+  - `query` and `template` must not be empty (or whitespace only).
+  - `template` and `statusUpdateQueryTemplate` must parse as Go templates with the operator's
+    function set (`lower`, `toYaml`, `nindent`, `now`, `date`, ...).
+  - `database.connectionSecretRef.name` must not be empty.
+- Warnings printed by `kubectl` (for example a `changeDetection.changePollInterval` that is not
+  shorter than `pollInterval`) do not block the request.
+
+### Error: "failed calling webhook" / "no endpoints available for service"
+
+**Symptom**: every create or update of a `DatabaseQueryResource` fails, with events like
+`failed calling webhook "vdatabasequeryresource-v1alpha1.konnektr.io"`.
+
+**Cause**: the webhook is installed with `failurePolicy: Fail`, so the API server rejects writes
+while the operator's webhook endpoint is unreachable (operator down, certificate not issued, or
+no ready endpoint behind the webhook Service). That is intentional — the alternative is
+silently accepting unvalidated specs.
+
+**Solutions**:
+
+```bash
+# Operator running?
+kubectl -n dbqo-system get pods
+
+# Serving certificate issued by cert-manager?
+kubectl -n dbqo-system get certificate,secret webhook-server-cert
+
+# Does the webhook Service have endpoints?
+kubectl -n dbqo-system get endpoints webhook-service
+
+# What did the operator log at startup?
+kubectl -n dbqo-system logs deploy/db-query-operator-controller-manager | grep -i webhook
+```
+
+If the names above differ, adjust them to your release/namespace. To run without admission
+validation entirely, upgrade with `--set webhook.enabled=false` or delete the webhook
+configuration:
+
+```bash
+kubectl delete validatingwebhookconfiguration db-query-operator-validating-webhook-configuration
+```
+
 ## Resource Management Issues
 
 ### Resources Not Created

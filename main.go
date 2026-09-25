@@ -26,6 +26,7 @@ import (
 	databasev1alpha1 "github.com/konnektr-io/db-query-operator/api/v1alpha1" // Adjust import path
 	"github.com/konnektr-io/db-query-operator/internal/controller"           // Adjust import path
 	"github.com/konnektr-io/db-query-operator/internal/util"
+	webhookv1alpha1 "github.com/konnektr-io/db-query-operator/internal/webhook/v1alpha1"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -163,6 +164,11 @@ func main() {
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder
+
+	if err = (&webhookv1alpha1.DatabaseQueryResourceCustomValidator{}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "DatabaseQueryResource")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")

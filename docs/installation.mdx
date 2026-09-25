@@ -11,6 +11,7 @@ This guide covers all installation methods for the DB Query Operator, from quick
 - **Helm**: v3.8 or later
 - **kubectl**: Configured to access your cluster
 - **PostgreSQL**: v12 or later
+- **cert-manager**: Required for the admission webhook certificate, which is enabled by default (skip it with `--set webhook.enabled=false`)
 
 ## Installation Methods
 
@@ -144,6 +145,29 @@ containerSecurityContext:
     drop:
       - ALL
 ```
+
+### Admission Webhook (Validation)
+
+The operator ships a validating admission webhook that rejects invalid `DatabaseQueryResource`
+specs at `kubectl apply` time. It is enabled by default and needs a TLS certificate plus
+[cert-manager](https://cert-manager.io) in the cluster (the chart creates a self-signed
+`Issuer`/`Certificate` and cert-manager injects the CA bundle):
+
+```bash
+# cert-manager (once per cluster)
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+```
+
+Install without admission validation (the operator still reconciles, but invalid specs are
+accepted and fail at reconcile time):
+
+```bash
+--set webhook.enabled=false
+```
+
+The webhook is served on port `9443`; the chart creates the `webhook-service` Service and the
+`ValidatingWebhookConfiguration`. Because it runs with `failurePolicy: Fail`, creating and
+updating `DatabaseQueryResource` objects fails while the webhook is unreachable.
 
 ## Complete Installation Example
 
