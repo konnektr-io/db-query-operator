@@ -1,0 +1,33 @@
+# The following manifests contain a self-signed Issuer and the Certificate that
+# backs the admission webhook server. cert-manager stores the resulting key pair
+# in the webhook-server-cert Secret, which the manager mounts at
+# /tmp/k8s-webhook-server/serving-certs.
+#
+# Requires cert-manager (https://cert-manager.io) to be installed in the cluster.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  labels:
+    control-plane: controller-manager
+  name: selfsigned-issuer
+  namespace: system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    control-plane: controller-manager
+  name: serving-cert # this name must match the one referenced in the kustomization
+  namespace: system
+spec:
+  # The dnsNames are patched by the parent kustomization so that they always
+  # match the (namespace- and name-prefixed) webhook Service.
+  dnsNames:
+  - webhook-service.system.svc
+  - webhook-service.system.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: selfsigned-issuer
+  secretName: webhook-server-cert # the Secret is referenced literally, so it is not name-prefixed

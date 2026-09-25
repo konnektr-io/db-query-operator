@@ -39,6 +39,7 @@ For detailed installation instructions and configuration options, see the [Insta
 * **Pruning:** Automatically cleans up resources previously created by the operator if they no longer correspond to a row in the database query result (configurable).
 * **Ownership:** Sets Owner References on created resources (optional, but recommended) for automatic garbage collection by Kubernetes when the `DatabaseQueryResource` is deleted.
 * **Labeling:** Labels created resources for easy identification and potential pruning.
+* **Admission Validation:** A validating admission webhook rejects invalid `DatabaseQueryResource` specs (unparseable `pollInterval`, empty `query`, malformed `template`, missing Secret name) at creation/update time instead of failing during reconciliation.
 
 ## Prerequisites
 
@@ -46,6 +47,7 @@ For detailed installation instructions and configuration options, see the [Insta
 * **Helm:** For installing the operator.
 * **Kubernetes Cluster:** Access to a Kubernetes cluster (e.g., kind, Minikube, EKS, GKE, AKS).
 * **PostgreSQL Database:** A running PostgreSQL instance accessible from the Kubernetes cluster.
+* **cert-manager:** For the admission webhook certificate (self-signed). Only needed when the webhook is enabled; the Helm chart enables it by default. Set `webhook.enabled=false` to install without it.
 
 ## Getting Started
 
@@ -419,6 +421,41 @@ This query:
 - Uses an index on the timestamp column
 - Has minimal impact on database performance
 - Can run every few seconds without issues
+
+## Admission Validation (Webhook)
+
+The operator ships a validating admission webhook, so an invalid `DatabaseQueryResource` is
+rejected by the API server at `kubectl apply` time instead of surfacing later as a
+reconciliation error (or a silent hot loop). Both `CREATE` and `UPDATE` requests are validated.
+
+| Field | Rule |
+|---|---|
+| `spec.pollInterval` | must parse as a Go duration (`30s`, `5m`, `1h30m`) and be greater than zero |
+| `spec.database.connectionSecretRef.name` | must not be empty |
+| `spec.query` | must not be empty or whitespace only |
+| `spec.template` | must not be empty and must parse as a Go template with the operator's function set |
+| `spec.statusUpdateQueryTemplate` | when set, must parse as a Go template |
+| `spec.changeDetection.changePollInterval` | when set, must parse as a Go duration and be greater than zero |
+
+A warning (not a rejection) is returned when `spec.changeDetection.changePollInterval` is not
+shorter than `spec.pollInterval`, because change detection cannot then make reconciliation more
+responsive than the full poll.
+
+```console
+$ kubectl apply -f invalid.yaml
+Error from server (Invalid): error when creating "invalid.yaml": admission webhook "vdatabasequeryresource-v1alpha1.konnektr.io" denied the request: DatabaseQueryResource.konnektr.io "user-configmaps-example" is invalid: spec.template: Invalid value: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: {{ .Row.username": must be a valid Go template: template: resourceTemplate:3: unclosed action
+```
+
+The webhook is served on port `9443` and needs a TLS certificate. Both the Helm chart and the
+kustomize overlay in `config/` use cert-manager (a self-signed `Issuer` plus a `Certificate`)
+to issue it and to inject the CA bundle into the `ValidatingWebhookConfiguration`, so
+cert-manager has to be installed in the cluster.
+
+The webhook runs with `failurePolicy: Fail`, deliberately: if it were bypassed, an invalid spec
+would be accepted and the operator would fail at reconcile time again. Consequence: while the
+webhook is unreachable, creating and updating `DatabaseQueryResource` objects is rejected too.
+To operate without admission validation, install with `webhook.enabled=false` (Helm) or remove
+the `webhook` and `certmanager` resources from `config/kustomization.yaml`.
 
 ## CRD Specification (`DatabaseQueryResourceSpec`)
 

@@ -28,6 +28,8 @@ go test ./... -count=1 -timeout 300s
 |---|---|---|
 | **Unit tests** | `go test ./internal/controller/... -count=1 -run 'Test' -v` | Pure logic tests (fast, no envtest) |
 | **Integration tests** | `go test ./internal/controller/... -count=1 -run 'TestControllers' -v` | Controller suite with envtest (etcd + kube-apiserver) |
+| **Webhook unit tests** | `go test ./internal/webhook/... -count=1 -run 'TestValidate|TestValidator' -v` | Admission validation logic (fast, no envtest) |
+| **Webhook integration tests** | `go test ./internal/webhook/... -count=1 -run 'TestWebhooks' -v` | Validating webhook served to a real API server via envtest |
 | **Util tests** | `go test ./internal/util/... -count=1 -v` | Utility function tests |
 | **All tests** | `go test ./... -count=1 -timeout 300s -v` | Everything |
 
@@ -63,6 +65,13 @@ The first run may take ~30s while envtest downloads binaries. Subsequent runs us
 │   │   ├── funcs.go                # Template functions
 │   │   ├── reconcile_logic_test.go # Pure unit tests
 │   │   └── suite_test.go           # Envtest bootstrap
+│   ├── webhook/
+│   │   └── v1alpha1/               # Admission validation
+│   │       ├── databasequeryresource_webhook.go  # Validator + kubebuilder markers
+│   │       ├── validation.go      # Validation rules (also used by the unit tests)
+│   │       ├── validation_test.go # Unit tests
+│   │       ├── webhook_integration_test.go # envtest: API server rejects invalid CRs
+│   │       └── suite_test.go      # Envtest bootstrap (webhook install options)
 │   └── util/
 │       ├── database_client.go      # DatabaseClient interface
 │       ├── postgres_client.go      # PostgreSQL implementation
@@ -73,7 +82,10 @@ The first run may take ~30s while envtest downloads binaries. Subsequent runs us
 ├── config/
 │   ├── samples/                    # Sample CRs
 │   ├── crd/                        # Generated CRD manifests
-│   └── rbac/                       # RBAC manifests
+│   ├── rbac/                       # RBAC manifests
+│   ├── webhook/                    # Generated ValidatingWebhookConfiguration + Service
+│   ├── certmanager/                # Self-signed Issuer + Certificate for the webhook
+│   └── manager/                    # Operator Deployment (mounts the serving certificate)
 └── docs/                           # Documentation site content (MDX)
 ```
 
@@ -101,12 +113,33 @@ After changing `api/v1alpha1/` types, regenerate deepcopy and CRD manifests:
 
 ```bash
 # Install controller-gen if needed
-go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.18.0
 
-# Regenerate
+# Regenerate (or simply run `make manifests`, which pins the same version)
 controller-gen object paths=./api/v1alpha1
-controller-gen rbac:roleName=manager-role crd webhook paths=./api/v1alpha1,./internal/controller output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
+controller-gen rbac:roleName=manager-role crd webhook "paths={./api/v1alpha1,./internal/controller,./internal/webhook/...}" output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac output:webhook:artifacts:config=config/webhook
 ```
+
+Note the `paths={a,b,c}` slice syntax — controller-gen does not accept the comma-separated
+`paths=a,b,c` form.
+
+### If You Add or Change a Webhook
+
+1. Add or edit the validator under `internal/webhook/v1alpha1/`. The
+   `+kubebuilder:webhook:` marker above the validator type drives manifest generation; make
+   sure its `path` matches the path controller-runtime derives
+   (`/validate-<group>-<version>-<kind>`).
+2. Run `make manifests` to regenerate `config/webhook/manifests.yaml`.
+3. Update `config/kustomization.yaml` if the webhook needs new resources. The namespace,
+   name prefix, Service reference, certificate `dnsNames` and the cert-manager
+   `inject-ca-from` annotation are all derived there, so verify the render:
+   ```bash
+   kustomize build config/ | grep -A 20 ValidatingWebhookConfiguration
+   ```
+4. Add unit tests for the validation rules (`validation_test.go`) and, when the webhook must
+   be reached through the API server, an envtest spec (`webhook_integration_test.go`). The
+   webhook suite installs `config/webhook/manifests.yaml` into the test API server, so a spec
+   that asserts a rejection must also assert it was the webhook that rejected it.
 
 ## Build Targets
 

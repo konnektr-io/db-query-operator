@@ -39,8 +39,8 @@ jobs:
         run: |
           if [ -n "${{ github.event.inputs.ginkgo_focus }}" ]; then
             echo "Running focused tests: ${{ github.event.inputs.ginkgo_focus }}"
-            go test -v -race -covermode=atomic -coverprofile=coverage.out ./internal/controller/... -ginkgo.focus="${{ github.event.inputs.ginkgo_focus }}"
+            go test -v -race -covermode=atomic -coverprofile=coverage.out ./internal/controller/... ./internal/webhook/... -ginkgo.focus="${{ github.event.inputs.ginkgo_focus }}"
           else
             echo "Running all tests"
-            go test -v -race -covermode=atomic -coverprofile=coverage.out ./internal/controller/...
+            go test -v -race -covermode=atomic -coverprofile=coverage.out ./internal/controller/... ./internal/webhook/...
           fi

@@ -2,11 +2,15 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: db-query-operator-system
 resources:
-  - ../crd/bases/konnektr.io_databasequeryresources.yaml
-  - ../rbac/service_account.yaml
-  - ../rbac/role.yaml
-  - ../rbac/role_binding.yaml
-  - ../manager/manager.yaml
+  - crd/bases/konnektr.io_databasequeryresources.yaml
+  - rbac/service_account.yaml
+  - rbac/role.yaml
+  - rbac/role_binding.yaml
+  - manager/manager.yaml
+  # Admission webhook: the ValidatingWebhookConfiguration, its Service and the
+  # cert-manager Issuer/Certificate serving the webhook endpoint.
+  - webhook
+  - certmanager
 
 namePrefix: db-query-operator-
 
@@ -19,3 +23,75 @@ commonLabels:
   app.kubernetes.io/name: db-query-operator
   app.kubernetes.io/instance: db-query-operator
   app.kubernetes.io/managed-by: kustomize
+
+# The certificate must name the webhook Service as it exists after the name
+# prefix, namespace and image transforms have been applied, and cert-manager
+# needs the inject-ca-from annotation to fill in the CA bundle announced to the
+# API server. Both are derived here so the values cannot drift.
+replacements:
+  - source:
+      kind: Service
+      version: v1
+      name: webhook-service
+      fieldPath: metadata.name
+    targets:
+      - select:
+          kind: Certificate
+          group: cert-manager.io
+          version: v1
+          name: serving-cert
+        fieldPaths:
+          - spec.dnsNames.0
+          - spec.dnsNames.1
+        options:
+          delimiter: .
+          index: 0
+  - source:
+      kind: Service
+      version: v1
+      name: webhook-service
+      fieldPath: metadata.namespace
+    targets:
+      - select:
+          kind: Certificate
+          group: cert-manager.io
+          version: v1
+          name: serving-cert
+        fieldPaths:
+          - spec.dnsNames.0
+          - spec.dnsNames.1
+        options:
+          delimiter: .
+          index: 1
+  - source:
+      kind: Certificate
+      group: cert-manager.io
+      version: v1
+      name: serving-cert
+      fieldPath: metadata.namespace
+    targets:
+      - select:
+          kind: ValidatingWebhookConfiguration
+          name: validating-webhook-configuration
+        fieldPaths:
+          - metadata.annotations.[cert-manager.io/inject-ca-from]
+        options:
+          delimiter: /
+          index: 0
+          create: true
+  - source:
+      kind: Certificate
+      group: cert-manager.io
+      version: v1
+      name: serving-cert
+      fieldPath: metadata.name
+    targets:
+      - select:
+          kind: ValidatingWebhookConfiguration
+          name: validating-webhook-configuration
+        fieldPaths:
+          - metadata.annotations.[cert-manager.io/inject-ca-from]
+        options:
+          delimiter: /
+          index: 1
+          create: true

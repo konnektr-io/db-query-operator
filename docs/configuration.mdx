@@ -389,6 +389,43 @@ CREATE INDEX idx_resources_updated_at ON resources(updated_at);
 
 ---
 
+## Validation
+
+Before a `DatabaseQueryResource` is persisted, the operator's validating admission webhook
+checks the parts of the spec that the CRD schema cannot express. An invalid resource is
+rejected by the API server (for both `CREATE` and `UPDATE`) with an `Invalid` error naming the
+offending field, instead of being accepted and failing later during reconciliation.
+
+| Field | Rule |
+|---|---|
+| `spec.pollInterval` | parseable as a Go duration (`30s`, `5m`, `1h30m`) and greater than zero |
+| `spec.database.connectionSecretRef.name` | non-empty |
+| `spec.query` | not empty and not whitespace only |
+| `spec.template` | not empty and parseable as a Go template with the operator's function set |
+| `spec.statusUpdateQueryTemplate` | parseable as a Go template when set |
+| `spec.changeDetection.changePollInterval` | parseable as a Go duration and greater than zero when set |
+
+Rejected resources look like this:
+
+```console
+Error from server (Invalid): error when creating "invalid.yaml": admission webhook
+"vdatabasequeryresource-v1alpha1.konnektr.io" denied the request:
+DatabaseQueryResource.konnektr.io "user-configmaps-example" is invalid:
+spec.query: Invalid value: "   ": query must not consist of whitespace only
+```
+
+A `changeDetection.changePollInterval` that is not shorter than `spec.pollInterval` is
+accepted with a warning, since change detection then cannot make reconciliation more
+responsive.
+
+The webhook serves on port `9443` behind the `webhook-service` Service and requires a TLS
+certificate; the Helm chart and the `config/` kustomize overlay both provision it with
+cert-manager. Because the webhook is installed with `failurePolicy: Fail`, writes to
+`DatabaseQueryResource` fail (rather than silently bypassing validation) while the webhook is
+unavailable. See [Installation](/docs/installation) for the cert-manager prerequisite.
+
+---
+
 ## Status Fields
 
 The operator updates these status fields on the DatabaseQueryResource.

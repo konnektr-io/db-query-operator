@@ -1,0 +1,26 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-konnektr-io-v1alpha1-databasequeryresource
+  failurePolicy: Fail
+  name: vdatabasequeryresource-v1alpha1.konnektr.io
+  rules:
+  - apiGroups:
+    - konnektr.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - databasequeryresources
+  sideEffects: None
