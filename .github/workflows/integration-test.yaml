@@ -20,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           cache: true
       - name: Install dependencies
         run: |
@@ -29,7 +29,7 @@ jobs:
       - name: Install envtest tools
         run: |
           go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-          setup-envtest use 1.36.x --bin-dir=./envtest-bin
+          setup-envtest use 1.37.x --bin-dir=./envtest-bin
           BIN_DIR=$(find ./envtest-bin -type d -name '*-linux-amd64' | head -n1)
           cp $BIN_DIR/* ./envtest-bin/
           echo "KUBEBUILDER_ASSETS=$PWD/envtest-bin" >> $GITHUB_ENV
