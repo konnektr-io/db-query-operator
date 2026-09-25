@@ -115,6 +115,24 @@ var _ = Describe("DatabaseQueryResource validating webhook", func() {
 			Expect(stored.Spec.Template).To(Equal(validTemplate))
 		})
 
+		It("rejects an update that reintroduces a zero pollInterval", func() {
+			current := &databasev1alpha1.DatabaseQueryResource{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, current)).To(Succeed())
+
+			// Accepted at create, but invalid going forward: without the
+			// webhook this update would re-arm the reconciliation hot loop.
+			current.Spec.PollInterval = "0s"
+			err := k8sClient.Update(ctx, current)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected an Invalid error, got %v", err)
+			Expect(err.Error()).To(ContainSubstring("spec.pollInterval"))
+			Expect(err.Error()).To(ContainSubstring("admission webhook"))
+
+			By("leaving the stored pollInterval untouched")
+			stored := &databasev1alpha1.DatabaseQueryResource{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, stored)).To(Succeed())
+			Expect(stored.Spec.PollInterval).To(Equal("1m"))
+		})
+
 		It("accepts an update that keeps the resource valid", func() {
 			current := &databasev1alpha1.DatabaseQueryResource{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, current)).To(Succeed())
