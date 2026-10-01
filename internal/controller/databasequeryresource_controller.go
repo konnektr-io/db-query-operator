@@ -98,6 +98,7 @@ func getLastAppliedConfig(obj *unstructured.Unstructured) (*managedResourceConfi
 func setLastAppliedConfig(obj *unstructured.Unstructured) error {
 	config := managedResourceConfig{
 		Spec:        obj.Object["spec"],
+		Data:        obj.Object["data"],
 		Labels:      obj.GetLabels(),
 		Annotations: obj.GetAnnotations(),
 	}
@@ -173,8 +174,110 @@ func (r *DatabaseQueryResourceReconciler) shouldUpdateResource(ctx context.Conte
 		currentConfig.Annotations = configAnnotations
 	}
 
-	// Return true if there's a difference
-	return !reflect.DeepEqual(*lastApplied, currentConfig), nil
+	// Compare current desired state with last applied. Both sides are normalised
+	// through JSON first: the stored config comes back from json.Unmarshal
+	// (float64 numbers) while the desired config is YAML-decoded from the
+	// rendered template (int64 numbers), so a plain reflect.DeepEqual would
+	// report every object containing an integer as changed on every pass.
+	// #21
+	if !configsEqual(*lastApplied, currentConfig) {
+		return true, nil
+	}
+	return false, nil
+}
+
+// canonicalConfig round-trips a value through JSON so that values decoded from
+// different sources compare on their content rather than on their Go type.
+func canonicalConfig(v interface{}) interface{} {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	var out interface{}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return v
+	}
+	return out
+}
+
+// configsEqual reports whether the stored and desired managed resource configs
+// are equivalent, normalising both through JSON before comparing.
+func configsEqual(lastApplied, current managedResourceConfig) bool {
+	return reflect.DeepEqual(canonicalConfig(lastApplied), canonicalConfig(current))
+}
+
+// applyDesiredState overlays the rendered desired state onto the live object:
+// spec and data are replaced outright, labels are overwritten, and annotations
+// are merged (an empty value removes the key) while preserving annotations set
+// by other actors.
+func applyDesiredState(existing, desired *unstructured.Unstructured) {
+	existing.Object["spec"] = desired.Object["spec"]
+	if desired.Object["data"] != nil {
+		existing.Object["data"] = desired.Object["data"]
+	} else {
+		delete(existing.Object, "data")
+	}
+
+	existing.SetLabels(desired.GetLabels())
+
+	existingAnns := existing.GetAnnotations()
+	if existingAnns == nil {
+		existingAnns = make(map[string]string)
+	}
+	for k, v := range desired.GetAnnotations() {
+		if v == "" {
+			delete(existingAnns, k)
+		} else {
+			existingAnns[k] = v
+		}
+	}
+	existing.SetAnnotations(existingAnns)
+}
+
+// updateWithConflictRetry writes the desired state onto the live object,
+// retrying optimistic-concurrency conflicts on that single child.
+//
+// On a conflict the object is re-read and the desired state re-applied on top
+// of the fresh copy, so a competing writer (typically Argo CD touching its own
+// Applications) costs one retry instead of failing the entire reconcile.
+// Recording the last-applied config here keeps shouldUpdateResource honest: the
+// annotation only advances once the write actually landed.
+func (r *DatabaseQueryResourceReconciler) updateWithConflictRetry(ctx context.Context, existing, desired *unstructured.Unstructured) error {
+	key := client.ObjectKeyFromObject(desired)
+	const maxRetries = 3
+
+	var lastErr error
+	for attempt := range maxRetries {
+		applyDesiredState(existing, desired)
+
+		if err := setLastAppliedConfig(existing); err != nil {
+			return err
+		}
+
+		err := r.Update(ctx, existing)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !apierrors.IsConflict(err) {
+			return err
+		}
+		if attempt == maxRetries-1 {
+			break
+		}
+
+		// Re-read the latest version and re-apply the desired state on top.
+		// applyDesiredState overwrites labels wholesale from the desired object,
+		// which already carries the managed-by label.
+		fresh := &unstructured.Unstructured{}
+		fresh.SetGroupVersionKind(desired.GroupVersionKind())
+		if getErr := r.Get(ctx, key, fresh); getErr != nil {
+			return getErr
+		}
+		existing = fresh
+	}
+
+	return lastErr
 }
 
 // main kubernetes reconciliation loop
@@ -493,44 +596,14 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 				// Update() replaces the entire spec, ensuring removed fields are cleaned up.
 				log.Info("Updating existing resource to replace fields", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 
-				// Replace spec and data with desired state
-				existing.Object["spec"] = obj.Object["spec"]
-				if obj.Object["data"] != nil {
-					existing.Object["data"] = obj.Object["data"]
-				} else {
-					delete(existing.Object, "data")
-				}
+				// Apply the desired state onto the live object
+				applyDesiredState(existing, obj)
 
-				// Overwrite labels (includes ManagedByLabel)
-				existing.SetLabels(obj.GetLabels())
-
-				// Merge annotations: preserve existing system annotations,
-				// overlay or remove annotations from the desired template
-				existingAnns := existing.GetAnnotations()
-				if existingAnns == nil {
-					existingAnns = make(map[string]string)
-				}
-				desiredAnns := obj.GetAnnotations()
-				if desiredAnns != nil {
-					for k, v := range desiredAnns {
-						if v == "" {
-							delete(existingAnns, k)
-						} else {
-							existingAnns[k] = v
-						}
-					}
-				}
-				existing.SetAnnotations(existingAnns)
-
-				// Set the last applied configuration on the updated object
-				if err := setLastAppliedConfig(existing); err != nil {
-					log.Error(err, "Failed to set last applied config on existing resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
-					rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("last applied config error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
-					continue // Skip this resource
-				}
-
-				// Full replace via Update() — this is the key fix.
-				if err := r.Update(ctx, existing); err != nil {
+				// Full replace via Update() — this is the key fix. A conflict
+				// here means a concurrent writer (e.g. Argo CD) touched the
+				// object between our Get and Update; retry the single child
+				// instead of failing the whole pass (#21).
+				if err := r.updateWithConflictRetry(ctx, existing, obj); err != nil {
 					log.Error(err, "Failed to update resource", "GVK", obj.GroupVersionKind(), "Namespace", obj.GetNamespace(), "Name", obj.GetName())
 					rowProcessingErrors = append(rowProcessingErrors, fmt.Sprintf("update error for %s/%s: %v", obj.GetNamespace(), obj.GetName(), err))
 					continue // Skip this resource
@@ -624,9 +697,16 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	if len(finalErrors) > 0 {
 		errMsg := strings.Join(finalErrors, "; ")
 		setCondition(dbqr, ConditionReconciled, metav1.ConditionFalse, "ProcessingError", truncateError(errMsg, 1024))
-		dbqr.Status.LastPollTime = nil // Clear last poll time on error? Or keep the last successful one? Let's keep it.
-		log.Error(fmt.Errorf("%s", errMsg), "Reconciliation failed with errors")
-		return ctrl.Result{RequeueAfter: pollInterval}, fmt.Errorf("reconciliation failed: %s", errMsg) // Requeue after interval even on error
+		log.Error(fmt.Errorf("%s", errMsg), "Reconciliation completed with errors")
+		// controller-runtime ignores Requeue whenever the error is non-nil and
+		// falls back to the rate limiter, so returning an error here made a
+		// partial failure requeue faster than pollInterval and fed the loop
+		// reported in #21. The failures are already surfaced through the
+		// Reconciled condition, so requeue on the configured interval instead.
+		// LastPollTime is intentionally left untouched: it records the last
+		// successful poll, and shouldReconcile still forces a full pass once
+		// pollInterval has elapsed.
+		return ctrl.Result{RequeueAfter: nextRequeueInterval(dbqr, pollInterval)}, nil
 	}
 
 	// Success
@@ -636,7 +716,9 @@ func (r *DatabaseQueryResourceReconciler) Reconcile(ctx context.Context, req ctr
 	dbqr.Status.LastReconcileTime = &now
 	setCondition(dbqr, ConditionReconciled, metav1.ConditionTrue, "Success", "Successfully queried DB and reconciled resources")
 
-	return ctrl.Result{RequeueAfter: pollInterval}, nil
+	// Wake up next at the configured pollInterval, or sooner when change
+	// detection is enabled so its detection query keeps running (#21).
+	return ctrl.Result{RequeueAfter: nextRequeueInterval(dbqr, pollInterval)}, nil
 }
 
 // parsePostgreSQLURI parses a PostgreSQL connection URI and returns connection parameters.
@@ -976,7 +1058,7 @@ func truncateError(msg string, maxLen int) string {
 // SetupWithManagerAndGVKs sets up the controller with the Manager and watches the specified GVKs as owned resources.
 func (r *DatabaseQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manager, ownedGVKs []schema.GroupVersionKind) error {
 	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
-		For(&databasev1alpha1.DatabaseQueryResource{})
+		For(&databasev1alpha1.DatabaseQueryResource{}, builder.WithPredicates(specOrLifecycleChangedPredicate()))
 
 	// Custom event handler for owned resources
 	for _, gvk := range ownedGVKs {
@@ -1007,6 +1089,39 @@ func statusChangePredicate() predicate.Predicate {
 	}
 }
 
+// specOrLifecycleChangedPredicate filters the primary watch so that the
+// controller's own status writes cannot re-enqueue it.
+//
+// Reconcile stamps status.lastPollTime / status.lastReconcileTime on every
+// pass, and the CRD enables the status subresource, so each status write is an
+// update event with an unchanged generation. Without a filter those events fed
+// straight back into the queue and the immediate request always won over the
+// RequeueAfter returned by Reconcile — collapsing the poll interval to the
+// duration of a single pass.
+//
+// A bare GenerationChangedPredicate is not sufficient: it would also swallow
+// finalizer transitions and deletionTimestamp changes, which are exactly the
+// events the finalizer cleanup path depends on.
+func specOrLifecycleChangedPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			if e.ObjectOld == nil || e.ObjectNew == nil {
+				return false
+			}
+			if e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration() {
+				return true
+			}
+			if !reflect.DeepEqual(e.ObjectOld.GetFinalizers(), e.ObjectNew.GetFinalizers()) {
+				return true
+			}
+			return !e.ObjectOld.GetDeletionTimestamp().Equal(e.ObjectNew.GetDeletionTimestamp())
+		},
+		CreateFunc:  func(e event.CreateEvent) bool { return true },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return true },
+		GenericFunc: func(e event.GenericEvent) bool { return false },
+	}
+}
+
 // getOrCreateDBClient returns a connected DatabaseClient using the factory or default logic
 func (r *DatabaseQueryResourceReconciler) getOrCreateDBClient(ctx context.Context, dbqr *databasev1alpha1.DatabaseQueryResource, dbConfig map[string]string) (util.DatabaseClient, error) {
 	if r.DBClientFactory != nil {
@@ -1028,6 +1143,38 @@ func (r *DatabaseQueryResourceReconciler) getOrCreateDBClient(ctx context.Contex
 	default:
 		return nil, fmt.Errorf("unsupported database type: %s", dbqr.Spec.Database.Type)
 	}
+}
+
+// changePollIntervalFor returns the interval at which change detection should
+// re-check the database, or 0 when change detection is disabled.
+//
+// When change detection is enabled it must not be starved by a long
+// pollInterval: the wake-up that follows a full reconciliation has to come
+// back at changePollInterval, otherwise the detection query only ever runs
+// once per pollInterval and the configured changePollInterval is dead config.
+// #21
+func changePollIntervalFor(spec databasev1alpha1.DatabaseQueryResourceSpec) time.Duration {
+	if spec.ChangeDetection == nil || !spec.ChangeDetection.Enabled {
+		return 0
+	}
+	interval := 10 * time.Second // default, matching shouldReconcile
+	if spec.ChangeDetection.ChangePollInterval != "" {
+		parsed, err := time.ParseDuration(spec.ChangeDetection.ChangePollInterval)
+		if err == nil {
+			interval = parsed
+		}
+	}
+	return interval
+}
+
+// nextRequeueInterval returns how long to wait before the next reconcile: the
+// configured pollInterval, shortened to changePollInterval when change
+// detection is enabled so the detection query keeps running.
+func nextRequeueInterval(dbqr *databasev1alpha1.DatabaseQueryResource, pollInterval time.Duration) time.Duration {
+	if changeInterval := changePollIntervalFor(dbqr.Spec); changeInterval > 0 && changeInterval < pollInterval {
+		return changeInterval
+	}
+	return pollInterval
 }
 
 // shouldReconcile determines if a full reconciliation should run

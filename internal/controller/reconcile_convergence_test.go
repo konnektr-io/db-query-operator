@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -18,6 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+
+	databasev1alpha1 "github.com/konnektr-io/db-query-operator/api/v1alpha1"
 )
 
 // decodeManifest mirrors the production render path: the template output is
@@ -170,6 +173,77 @@ data:
 	g.Expect(updateNeeded).To(BeTrue(), "a real content change must still trigger an update")
 }
 
+// TestNextRequeueInterval_ChangeDetectionNotStarved guards the regression that
+// removing the self-triggering watch exposed: after a full reconciliation the
+// controller used to requeue at pollInterval, so a CR configured with
+// pollInterval 5m and changePollInterval 2s never ran its detection query again
+// until the full interval elapsed — the accidental ~17s wake-ups had been the
+// only thing keeping it alive (#21).
+func TestNextRequeueInterval_ChangeDetectionNotStarved(t *testing.T) {
+	tests := []struct {
+		name         string
+		spec         databasev1alpha1.DatabaseQueryResourceSpec
+		pollInterval time.Duration
+		want         time.Duration
+	}{
+		{
+			name:         "change detection disabled uses pollInterval",
+			spec:         databasev1alpha1.DatabaseQueryResourceSpec{},
+			pollInterval: 15 * time.Minute,
+			want:         15 * time.Minute,
+		},
+		{
+			name: "change detection shorter than pollInterval wins",
+			spec: databasev1alpha1.DatabaseQueryResourceSpec{
+				ChangeDetection: &databasev1alpha1.ChangeDetectionConfig{
+					Enabled:            true,
+					ChangePollInterval: "2s",
+				},
+			},
+			pollInterval: 5 * time.Minute,
+			want:         2 * time.Second,
+		},
+		{
+			name: "change detection longer than pollInterval does not delay the poll",
+			spec: databasev1alpha1.DatabaseQueryResourceSpec{
+				ChangeDetection: &databasev1alpha1.ChangeDetectionConfig{
+					Enabled:            true,
+					ChangePollInterval: "1h",
+				},
+			},
+			pollInterval: 5 * time.Minute,
+			want:         5 * time.Minute,
+		},
+		{
+			name: "invalid changePollInterval falls back to the default",
+			spec: databasev1alpha1.DatabaseQueryResourceSpec{
+				ChangeDetection: &databasev1alpha1.ChangeDetectionConfig{
+					Enabled:            true,
+					ChangePollInterval: "not-a-duration",
+				},
+			},
+			pollInterval: time.Minute,
+			want:         10 * time.Second,
+		},
+		{
+			name: "enabled change detection without an explicit interval uses the default",
+			spec: databasev1alpha1.DatabaseQueryResourceSpec{
+				ChangeDetection: &databasev1alpha1.ChangeDetectionConfig{Enabled: true},
+			},
+			pollInterval: 5 * time.Minute,
+			want:         10 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			dbqr := &databasev1alpha1.DatabaseQueryResource{Spec: tt.spec}
+			g.Expect(nextRequeueInterval(dbqr, tt.pollInterval)).To(Equal(tt.want))
+		})
+	}
+}
+
 // TestSpecOrLifecycleChangedPredicate covers root cause 1 of #21: the primary
 // watch had no predicates, so every status write this controller made
 // (status.lastPollTime always changes) re-enqueued the object and the
@@ -223,9 +297,9 @@ func TestSpecOrLifecycleChangedPredicate(t *testing.T) {
 			reason:    "finalizer transitions must run the cleanup path",
 		},
 		{
-			name: "finalizer removed is allowed",
-			old:  mutation(func(o *unstructured.Unstructured) { o.SetFinalizers([]string{DatabaseQueryFinalizer}) }),
-			new:  base(),
+			name:      "finalizer removed is allowed",
+			old:       mutation(func(o *unstructured.Unstructured) { o.SetFinalizers([]string{DatabaseQueryFinalizer}) }),
+			new:       base(),
 			wantAllow: true,
 			reason:    "finalizer removal completes deletion",
 		},
